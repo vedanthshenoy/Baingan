@@ -29,7 +29,7 @@ st.sidebar.header("🔧 API Configuration")
 # API URL input
 api_url = st.sidebar.text_input(
     "API Endpoint URL",
-    placeholder="https://api.example.com/chat",
+    placeholder="https://api.example.com/chat/rag",
     help="Enter the full URL of your chat API endpoint"
 )
 
@@ -61,14 +61,25 @@ elif auth_type == "Custom":
 # Content-Type
 headers["Content-Type"] = "application/json"
 
-# Request body template
-st.sidebar.subheader("Request Body Template")
+# System prompt input
+system_prompt = st.sidebar.text_area(
+    "System Prompt (optional)",
+    placeholder="Enter system-level instructions here",
+    height=100
+)
+
+# Request body template for RAG
+st.sidebar.subheader("Request Body Template (RAG mode)")
 body_template = st.sidebar.text_area(
     "JSON Template (use {prompt} as placeholder)",
-    value='{\n  "message": "{prompt}",\n  "temperature": 0.7,\n  "max_tokens": 150\n}',
+    value="""{
+  "query": "{prompt}",
+  "top_k": 5
+}""",
     height=150,
-    help="Use {prompt} where you want the prompt text to be inserted"
+    help="Use {prompt} where you want the combined system+user text to be inserted"
 )
+
 
 # Response path for extracting the actual response
 response_path = st.sidebar.text_input(
@@ -111,7 +122,6 @@ with col1:
                 st.text(prompt)
                 if st.button(f"🗑️ Remove", key=f"remove_{i}"):
                     st.session_state.prompts.pop(i)
-                    # Also remove corresponding results if they exist
                     if i < len(st.session_state.test_results):
                         st.session_state.test_results.pop(i)
                     st.rerun()
@@ -119,7 +129,6 @@ with col1:
 with col2:
     st.header("🧪 Testing & Results")
     
-    # Test button
     if st.button("🚀 Test All Prompts", type="primary", disabled=not (api_url and st.session_state.prompts)):
         if not api_url:
             st.error("Please enter an API endpoint URL")
@@ -134,11 +143,10 @@ with col2:
                 status_text.text(f"Testing prompt {i+1}/{len(st.session_state.prompts)}...")
                 
                 try:
-                    # Prepare request body
-                    body = body_template.replace("{prompt}", prompt)
+                    combined_prompt = f"System instructions: {system_prompt}\n\nUser: {prompt}" if system_prompt else prompt
+                    body = body_template.replace("{prompt}", combined_prompt)
                     body_json = json.loads(body)
                     
-                    # Make API request
                     response = requests.post(
                         api_url,
                         headers=headers,
@@ -148,18 +156,15 @@ with col2:
                     
                     if response.status_code == 200:
                         response_data = response.json()
-                        
-                        # Extract response text using the specified path
                         response_text = response_data
-                        for key in response_path.split('.'):
+                        for key in response_path.split('.'): 
                             if key in response_text:
                                 response_text = response_text[key]
                             else:
                                 response_text = str(response_data)
                                 break
-                        
                         result = {
-                            'prompt': prompt,
+                            'prompt': combined_prompt,
                             'response': str(response_text),
                             'status': 'Success',
                             'status_code': response.status_code,
@@ -167,33 +172,16 @@ with col2:
                         }
                     else:
                         result = {
-                            'prompt': prompt,
+                            'prompt': combined_prompt,
                             'response': f"Error: {response.text}",
                             'status': 'Error',
                             'status_code': response.status_code,
                             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         }
-                
-                except requests.exceptions.RequestException as e:
-                    result = {
-                        'prompt': prompt,
-                        'response': f"Request Error: {str(e)}",
-                        'status': 'Connection Error',
-                        'status_code': 'N/A',
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    }
-                except json.JSONDecodeError as e:
-                    result = {
-                        'prompt': prompt,
-                        'response': f"JSON Error: {str(e)}",
-                        'status': 'JSON Error',
-                        'status_code': 'N/A',
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    }
                 except Exception as e:
                     result = {
                         'prompt': prompt,
-                        'response': f"Unknown Error: {str(e)}",
+                        'response': f"Error: {str(e)}",
                         'status': 'Unknown Error',
                         'status_code': 'N/A',
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -205,15 +193,11 @@ with col2:
             status_text.text("Testing completed!")
             st.success(f"Tested {len(st.session_state.prompts)} prompts!")
     
-    # Display results
     if st.session_state.test_results:
         st.subheader("📊 Test Results")
-        
-        # Summary
-        success_count = sum(1 for result in st.session_state.test_results if result['status'] == 'Success')
+        success_count = sum(1 for r in st.session_state.test_results if r['status'] == 'Success')
         st.metric("Successful Tests", f"{success_count}/{len(st.session_state.test_results)}")
         
-        # Results display
         for i, result in enumerate(st.session_state.test_results):
             status_color = "🟢" if result['status'] == 'Success' else "🔴"
             with st.expander(f"{status_color} Test {i+1} - {result['status']}"):
@@ -227,19 +211,13 @@ with col2:
 # Export section
 if st.session_state.test_results:
     st.header("💾 Export Results")
-    
     col1, col2 = st.columns(2)
-    
     with col1:
         if st.button("📥 Download Excel", type="primary"):
             df = pd.DataFrame(st.session_state.test_results)
-            
-            # Create Excel file in memory
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='Test_Results', index=False)
-                
-                # Auto-adjust column widths
                 worksheet = writer.sheets['Test_Results']
                 for column in worksheet.columns:
                     max_length = 0
@@ -252,21 +230,17 @@ if st.session_state.test_results:
                             pass
                     adjusted_width = min(max_length + 2, 50)
                     worksheet.column_dimensions[column_letter].width = adjusted_width
-            
             excel_data = output.getvalue()
-            
             st.download_button(
                 label="Download Excel File",
                 data=excel_data,
                 file_name=f"chat_api_test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-    
     with col2:
         if st.button("📋 Show DataFrame"):
             df = pd.DataFrame(st.session_state.test_results)
             st.dataframe(df, use_container_width=True)
 
-# Footer
 st.markdown("---")
-st.markdown("💡 **Tips:** Make sure your API endpoint accepts POST requests and returns JSON responses.")
+st.markdown("💡 **Tips:** This now supports /chat/rag. Use the System Prompt box to experiment with instructions.")
