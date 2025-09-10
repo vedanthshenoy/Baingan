@@ -29,8 +29,12 @@ if 'chain_results' not in st.session_state:
     st.session_state.chain_results = []
 if 'combination_results' not in st.session_state:
     st.session_state.combination_results = []
+if 'slider_weights' not in st.session_state:
+    st.session_state.slider_weights = {}
+if 'last_selected_prompts' not in st.session_state:
+    st.session_state.last_selected_prompts = []
 
-st.title("🔮 Baingan 🍆")
+st.title("🔮 BainGan 🍆")
 st.markdown("Test **system prompts**, create **prompt chains**, and **combine prompts** with AI assistance")
 
 # Sidebar for API configuration
@@ -162,6 +166,8 @@ def add_prompt_section():
             st.session_state.test_results = []
             st.session_state.chain_results = []
             st.session_state.combination_results = []
+            st.session_state.slider_weights = {}
+            st.session_state.last_selected_prompts = []
             st.success("Cleared all prompts and results")
             st.rerun()
     
@@ -197,6 +203,9 @@ def add_prompt_section():
                         st.session_state.test_results.pop(i)
                     if i < len(st.session_state.chain_results):
                         st.session_state.chain_results.pop(i)
+                    # Remove from slider weights if present
+                    if i in st.session_state.slider_weights:
+                        del st.session_state.slider_weights[i]
                     st.rerun()
 
 def call_api(system_prompt, query):
@@ -313,7 +322,8 @@ with col2:
                         'prompt_name': prompt_name,
                         'system_prompt': system_prompt,
                         'query': query_text,
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'edited': False
                     })
 
                     st.session_state.test_results.append(result)
@@ -358,6 +368,7 @@ with col2:
                                     suggestion = suggest_prompt_from_response(edited_response, result['query'])
                                     st.session_state.prompts[i] = suggestion
                                     st.session_state.test_results[i]['system_prompt'] = suggestion
+                                    st.session_state.test_results[i]['edited'] = True
                                     st.success("Prompt updated based on edited response!")
                                     st.rerun()
                     
@@ -366,7 +377,55 @@ with col2:
                         with st.spinner("Generating prompt suggestion..."):
                             suggestion = suggest_prompt_from_response(edited_response, result['query'])
                             st.write("**Suggested System Prompt:**")
-                            st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_{i}")
+                            suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_{i}", disabled=True)
+                            
+                            col_save, col_save_run, col_edit = st.columns(3)
+                            with col_save:
+                                prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key=f"suggest_name_{i}")
+                                if st.button("💾 Save as Prompt", key=f"save_suggest_{i}"):
+                                    if prompt_name.strip():
+                                        st.session_state.prompts.append(suggestion)
+                                        st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.success(f"Saved as new prompt: {prompt_name.strip()}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Please provide a prompt name")
+                            with col_save_run:
+                                run_prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key=f"suggest_run_name_{i}")
+                                if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggest_{i}"):
+                                    if run_prompt_name.strip():
+                                        st.session_state.prompts.append(suggestion)
+                                        st.session_state.prompt_names.append(run_prompt_name.strip())
+                                        with st.spinner("Running new prompt..."):
+                                            result = call_api(suggestion, query_text)
+                                            result.update({
+                                                'prompt_name': run_prompt_name.strip(),
+                                                'system_prompt': suggestion,
+                                                'query': query_text,
+                                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                'edited': False
+                                            })
+                                            st.session_state.test_results.append(result)
+                                        st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Please provide a prompt name")
+                            with col_edit:
+                                if st.button("✏️ Edit", key=f"edit_suggest_{i}"):
+                                    st.session_state[f"edit_suggest_{i}_active"] = True
+                            
+                            if st.session_state.get(f"edit_suggest_{i}_active", False):
+                                edited_suggestion = st.text_area("Edit Suggested Prompt:", value=suggestion, height=100, key=f"edit_suggested_{i}")
+                                if st.button("💾 Save Edited Prompt", key=f"save_edited_suggest_{i}"):
+                                    prompt_name = st.text_input("Prompt Name for Edited Prompt:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key=f"edit_suggest_name_{i}")
+                                    if prompt_name.strip():
+                                        st.session_state.prompts.append(edited_suggestion)
+                                        st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.session_state[f"edit_suggest_{i}_active"] = False
+                                        st.success(f"Saved edited prompt as: {prompt_name.strip()}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Please provide a prompt name")
                     
                     st.write("**Details:**")
                     st.write(f"Status Code: {result['status_code']} | Time: {result['timestamp']}")
@@ -422,7 +481,8 @@ with col2:
                         'prompt_name': prompt_name,
                         'system_prompt': system_prompt,
                         'input_query': current_query,
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'edited': False
                     })
                     
                     st.session_state.chain_results.append(result)
@@ -465,6 +525,7 @@ with col2:
                                 last_index = len(st.session_state.prompts) - 1
                                 st.session_state.prompts[last_index] = suggestion
                                 st.session_state.chain_results[-1]['system_prompt'] = suggestion
+                                st.session_state.chain_results[-1]['edited'] = True
                                 st.success("Final prompt updated based on edited response!")
                                 st.rerun()
                 
@@ -472,7 +533,55 @@ with col2:
                     with st.spinner("Generating prompt suggestion..."):
                         suggestion = suggest_prompt_from_response(edited_final, final_result['input_query'])
                         st.write("**Suggested System Prompt:**")
-                        st.text_area("Suggested Prompt:", value=suggestion, height=100, key="suggested_final_chain")
+                        suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key="suggested_final_chain", disabled=True)
+                        
+                        col_save, col_save_run, col_edit = st.columns(3)
+                        with col_save:
+                            prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key="suggest_final_name")
+                            if st.button("💾 Save as Prompt", key="save_suggest_final"):
+                                if prompt_name.strip():
+                                    st.session_state.prompts.append(suggestion)
+                                    st.session_state.prompt_names.append(prompt_name.strip())
+                                    st.success(f"Saved as new prompt: {prompt_name.strip()}")
+                                    st.rerun()
+                                else:
+                                    st.error("Please provide a prompt name")
+                        with col_save_run:
+                            run_prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key="suggest_final_run_name")
+                            if st.button("🏃 Save as Prompt and Run", key="save_run_suggest_final"):
+                                if run_prompt_name.strip():
+                                    st.session_state.prompts.append(suggestion)
+                                    st.session_state.prompt_names.append(run_prompt_name.strip())
+                                    with st.spinner("Running new prompt..."):
+                                        result = call_api(suggestion, query_text)
+                                        result.update({
+                                            'prompt_name': run_prompt_name.strip(),
+                                            'system_prompt': suggestion,
+                                            'query': query_text,
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'edited': False
+                                        })
+                                        st.session_state.test_results.append(result)
+                                    st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
+                                    st.rerun()
+                                else:
+                                    st.error("Please provide a prompt name")
+                        with col_edit:
+                            if st.button("✏️ Edit", key="edit_suggest_final"):
+                                st.session_state["edit_suggest_final_active"] = True
+                        
+                        if st.session_state.get("edit_suggest_final_active", False):
+                            edited_suggestion = st.text_area("Edit Suggested Prompt:", value=suggestion, height=100, key="edit_suggested_final")
+                            if st.button("💾 Save Edited Prompt", key="save_edited_suggest_final"):
+                                prompt_name = st.text_input("Prompt Name for Edited Prompt:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key="edit_suggest_final_name")
+                                if prompt_name.strip():
+                                    st.session_state.prompts.append(edited_suggestion)
+                                    st.session_state.prompt_names.append(prompt_name.strip())
+                                    st.session_state["edit_suggest_final_active"] = False
+                                    st.success(f"Saved edited prompt as: {prompt_name.strip()}")
+                                    st.rerun()
+                                else:
+                                    st.error("Please provide a prompt name")
                         
             else:
                 st.error(f"❌ Chain failed at step {final_result['step']}: {final_result['prompt_name']}")
@@ -510,6 +619,7 @@ with col2:
                                     suggestion = suggest_prompt_from_response(edited_step_response, result['input_query'])
                                     st.session_state.prompts[j] = suggestion
                                     st.session_state.chain_results[j]['system_prompt'] = suggestion
+                                    st.session_state.chain_results[j]['edited'] = True
                                     st.success("Prompt updated based on edited response!")
                                     st.rerun()
                     
@@ -518,7 +628,55 @@ with col2:
                         with st.spinner("Generating prompt suggestion..."):
                             suggestion = suggest_prompt_from_response(edited_step_response, result['input_query'])
                             st.write("**Suggested System Prompt:**")
-                            st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_chain_{j}")
+                            suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_chain_{j}", disabled=True)
+                            
+                            col_save, col_save_run, col_edit = st.columns(3)
+                            with col_save:
+                                prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key=f"suggest_chain_name_{j}")
+                                if st.button("💾 Save as Prompt", key=f"save_suggest_chain_{j}"):
+                                    if prompt_name.strip():
+                                        st.session_state.prompts.append(suggestion)
+                                        st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.success(f"Saved as new prompt: {prompt_name.strip()}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Please provide a prompt name")
+                            with col_save_run:
+                                run_prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key=f"suggest_chain_run_name_{j}")
+                                if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggest_chain_{j}"):
+                                    if run_prompt_name.strip():
+                                        st.session_state.prompts.append(suggestion)
+                                        st.session_state.prompt_names.append(run_prompt_name.strip())
+                                        with st.spinner("Running new prompt..."):
+                                            result = call_api(suggestion, query_text)
+                                            result.update({
+                                                'prompt_name': run_prompt_name.strip(),
+                                                'system_prompt': suggestion,
+                                                'query': query_text,
+                                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                'edited': False
+                                            })
+                                            st.session_state.test_results.append(result)
+                                        st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Please provide a prompt name")
+                            with col_edit:
+                                if st.button("✏️ Edit", key=f"edit_suggest_chain_{j}"):
+                                    st.session_state[f"edit_suggest_chain_{j}_active"] = True
+                            
+                            if st.session_state.get(f"edit_suggest_chain_{j}_active", False):
+                                edited_suggestion = st.text_area("Edit Suggested Prompt:", value=suggestion, height=100, key=f"edit_suggested_chain_{j}")
+                                if st.button("💾 Save Edited Prompt", key=f"save_edited_suggest_chain_{j}"):
+                                    prompt_name = st.text_input("Prompt Name for Edited Prompt:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key=f"edit_suggest_chain_name_{j}")
+                                    if prompt_name.strip():
+                                        st.session_state.prompts.append(edited_suggestion)
+                                        st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.session_state[f"edit_suggest_chain_{j}_active"] = False
+                                        st.success(f"Saved edited prompt as: {prompt_name.strip()}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Please provide a prompt name")
                     
                     st.write("**Details:**")
                     st.write(f"Status Code: {result['status_code']} | Time: {result['timestamp']}")
@@ -548,6 +706,11 @@ with col2:
                 default=list(range(min(2, len(st.session_state.prompts))))
             )
             
+            # Reset weights if selected prompts change
+            if selected_prompts != st.session_state.last_selected_prompts:
+                st.session_state.slider_weights = {}
+                st.session_state.last_selected_prompts = selected_prompts
+            
             if selected_prompts:
                 st.subheader("Selected Prompts Preview")
                 for idx in selected_prompts:
@@ -567,26 +730,60 @@ with col2:
                 )
                 
                 # Slider strategy
-                slider_weights = {}
                 if combination_strategy == "Slider - Custom influence weights":
                     st.subheader("🎚️ Influence Weights")
-                    st.write("Set how much influence each prompt should have (0-100%):")
+                    st.write("Set how much influence each prompt should have (0-100%, auto-adjusted to sum to 100%):")
+                    
+                    # Initialize weights if not already set or if mismatch
+                    if not st.session_state.slider_weights or len(st.session_state.slider_weights) != len(selected_prompts):
+                        default_weight = 100 // max(1, len(selected_prompts))
+                        st.session_state.slider_weights = {idx: default_weight for idx in selected_prompts}
+                        # Adjust last weight to ensure sum is 100
+                        if selected_prompts:
+                            total = sum(st.session_state.slider_weights.values())
+                            if total != 100:
+                                st.session_state.slider_weights[selected_prompts[-1]] = 100 - sum(st.session_state.slider_weights.get(i, 0) for i in selected_prompts[:-1])
                     
                     for idx in selected_prompts:
-                        weight = st.slider(
+                        def update_weights(changed_idx):
+                            """Update weights to maintain sum of 100%"""
+                            # Get the current value from session state
+                            new_value = st.session_state[f"weight_{changed_idx}"]
+                            st.session_state.slider_weights[changed_idx] = new_value
+                            remaining_weight = 100 - new_value
+                            other_indices = [i for i in selected_prompts if i != changed_idx]
+                            if other_indices:
+                                if len(other_indices) == 1:
+                                    st.session_state.slider_weights[other_indices[0]] = remaining_weight
+                                else:
+                                    total_other = sum(st.session_state.slider_weights.get(i, 0) for i in other_indices)
+                                    if total_other > 0:
+                                        for i in other_indices:
+                                            current_weight = st.session_state.slider_weights.get(i, 0)
+                                            st.session_state.slider_weights[i] = int((current_weight / total_other) * remaining_weight)
+                                        # Adjust last weight to ensure exact sum of 100
+                                        total_new = sum(st.session_state.slider_weights.get(i, 0) for i in selected_prompts)
+                                        if total_new != 100:
+                                            st.session_state.slider_weights[other_indices[-1]] += 100 - total_new
+                    
+                        # Initialize weight for display
+                        weight = st.session_state.slider_weights.get(idx, 100 // max(1, len(selected_prompts)))
+                        st.session_state.slider_weights[idx] = weight
+                        
+                        st.slider(
                             f"{st.session_state.prompt_names[idx]}:",
                             min_value=0,
                             max_value=100,
-                            value=100 // len(selected_prompts),
-                            key=f"weight_{idx}"
+                            value=weight,
+                            key=f"weight_{idx}",
+                            on_change=update_weights,
+                            args=(idx,)
                         )
-                        slider_weights[idx] = weight
                     
-                    total_weight = sum(slider_weights.values())
-                    if total_weight > 0:
-                        st.write(f"**Total Weight:** {total_weight}% (weights will be normalized)")
-                    else:
-                        st.warning("Please set at least one prompt weight > 0%")
+                    total_weight = sum(st.session_state.slider_weights.get(idx, 0) for idx in selected_prompts)
+                    st.write(f"**Total Weight:** {total_weight}%")
+                    if total_weight != 100:
+                        st.warning("Weights adjusted to sum to 100%")
         else:
             st.info("Add system prompts first to combine them")
         
@@ -595,7 +792,7 @@ with col2:
                 st.error("Please configure Gemini API key")
             elif not selected_prompts:
                 st.error("Please select at least 2 prompts to combine")
-            elif combination_strategy == "Slider - Custom influence weights" and sum(slider_weights.values()) == 0:
+            elif combination_strategy == "Slider - Custom influence weights" and sum(st.session_state.slider_weights.get(idx, 0) for idx in selected_prompts) == 0:
                 st.error("Please set at least one prompt weight > 0%")
             else:
                 try:
@@ -609,11 +806,11 @@ with col2:
                     
                     if combination_strategy == "Slider - Custom influence weights":
                         # Normalize weights
-                        total_weight = sum(slider_weights.values())
-                        normalized_weights = {k: (v/total_weight)*100 for k, v in slider_weights.items()}
+                        total_weight = sum(st.session_state.slider_weights.get(idx, 0) for idx in selected_prompts)
+                        normalized_weights = {k: (v/total_weight)*100 for k, v in st.session_state.slider_weights.items() if k in selected_prompts}
                         
                         weight_info = "\n".join([
-                            f"{st.session_state.prompt_names[idx]} ({normalized_weights[idx]:.1f}% influence): {st.session_state.prompts[idx]}" 
+                            f"{st.session_state.prompt_names[idx]} ({normalized_weights.get(idx, 0):.1f}% influence): {st.session_state.prompts[idx]}" 
                             for idx in selected_prompts
                         ])
                         
@@ -669,7 +866,7 @@ Return only the combined system prompt without additional explanation.
                             'combined_prompt': combined_prompt,
                             'strategy': combination_strategy,
                             'temperature': temperature,
-                            'slider_weights': slider_weights if combination_strategy == "Slider - Custom influence weights" else None,
+                            'slider_weights': st.session_state.slider_weights if combination_strategy == "Slider - Custom influence weights" else None,
                             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             'individual_results': [],
                             'combined_result': None
@@ -695,14 +892,18 @@ Return only the combined system prompt without additional explanation.
                             result.update({
                                 'prompt_index': i + 1,
                                 'prompt_name': name,
-                                'system_prompt': prompt
+                                'system_prompt': prompt,
+                                'edited': False
                             })
                             individual_results.append(result)
                     
                     with st.spinner("Testing combined prompt..."):
                         # Test combined prompt
                         combined_result = call_api(st.session_state.combination_results['combined_prompt'], query_text)
-                        combined_result['system_prompt'] = st.session_state.combination_results['combined_prompt']
+                        combined_result.update({
+                            'system_prompt': st.session_state.combination_results['combined_prompt'],
+                            'edited': False
+                        })
                     
                     st.session_state.combination_results['individual_results'] = individual_results
                     st.session_state.combination_results['combined_result'] = combined_result
@@ -725,6 +926,9 @@ Return only the combined system prompt without additional explanation.
             if combined_prompt_text != st.session_state.combination_results['combined_prompt']:
                 if st.button("💾 Save Combined Prompt"):
                     st.session_state.combination_results['combined_prompt'] = combined_prompt_text
+                    if st.session_state.combination_results.get('combined_result'):
+                        st.session_state.combination_results['combined_result']['system_prompt'] = combined_prompt_text
+                        st.session_state.combination_results['combined_result']['edited'] = True
                     st.success("Combined prompt updated!")
                     st.rerun()
             
@@ -735,8 +939,9 @@ Return only the combined system prompt without additional explanation.
             if st.session_state.combination_results.get('slider_weights'):
                 st.write("**Influence Weights Used:**")
                 for idx, weight in st.session_state.combination_results['slider_weights'].items():
-                    name = st.session_state.combination_results['individual_names'][list(st.session_state.combination_results['slider_weights'].keys()).index(idx)]
-                    st.write(f"- {name}: {weight}%")
+                    if idx in st.session_state.combination_results['selected_indices']:
+                        name = st.session_state.combination_results['individual_names'][st.session_state.combination_results['selected_indices'].index(idx)]
+                        st.write(f"- {name}: {weight}%")
             
             # Show test results if available
             if st.session_state.combination_results.get('individual_results') and st.session_state.combination_results.get('combined_result'):
@@ -771,13 +976,63 @@ Return only the combined system prompt without additional explanation.
                                             st.session_state.prompts[source_idx] = suggestion
                                             st.session_state.combination_results['individual_prompts'][j] = suggestion
                                             st.session_state.combination_results['individual_results'][j]['system_prompt'] = suggestion
+                                            st.session_state.combination_results['individual_results'][j]['edited'] = True
                                             st.success("Prompt updated based on edited response!")
                                             st.rerun()
                             
                             if st.button(f"🔮 Suggest Prompt", key=f"suggest_individual_{j}"):
                                 with st.spinner("Generating prompt suggestion..."):
                                     suggestion = suggest_prompt_from_response(edited_individual_response, query_text)
-                                    st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_individual_{j}")
+                                    st.write("**Suggested System Prompt:**")
+                                    suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_individual_{j}", disabled=True)
+                                    
+                                    col_save, col_save_run, col_edit = st.columns(3)
+                                    with col_save:
+                                        prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key=f"suggest_individual_name_{j}")
+                                        if st.button("💾 Save as Prompt", key=f"save_suggest_individual_{j}"):
+                                            if prompt_name.strip():
+                                                st.session_state.prompts.append(suggestion)
+                                                st.session_state.prompt_names.append(prompt_name.strip())
+                                                st.success(f"Saved as new prompt: {prompt_name.strip()}")
+                                                st.rerun()
+                                            else:
+                                                st.error("Please provide a prompt name")
+                                    with col_save_run:
+                                        run_prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key=f"suggest_individual_run_name_{j}")
+                                        if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggest_individual_{j}"):
+                                            if run_prompt_name.strip():
+                                                st.session_state.prompts.append(suggestion)
+                                                st.session_state.prompt_names.append(run_prompt_name.strip())
+                                                with st.spinner("Running new prompt..."):
+                                                    result = call_api(suggestion, query_text)
+                                                    result.update({
+                                                        'prompt_name': run_prompt_name.strip(),
+                                                        'system_prompt': suggestion,
+                                                        'query': query_text,
+                                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                        'edited': False
+                                                    })
+                                                    st.session_state.test_results.append(result)
+                                                st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
+                                                st.rerun()
+                                            else:
+                                                st.error("Please provide a prompt name")
+                                    with col_edit:
+                                        if st.button("✏️ Edit", key=f"edit_suggest_individual_{j}"):
+                                            st.session_state[f"edit_suggest_individual_{j}_active"] = True
+                                    
+                                    if st.session_state.get(f"edit_suggest_individual_{j}_active", False):
+                                        edited_suggestion = st.text_area("Edit Suggested Prompt:", value=suggestion, height=100, key=f"edit_suggested_individual_{j}")
+                                        if st.button("💾 Save Edited Prompt", key=f"save_edited_suggest_individual_{j}"):
+                                            prompt_name = st.text_input("Prompt Name for Edited Prompt:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key=f"edit_suggest_individual_name_{j}")
+                                            if prompt_name.strip():
+                                                st.session_state.prompts.append(edited_suggestion)
+                                                st.session_state.prompt_names.append(prompt_name.strip())
+                                                st.session_state[f"edit_suggest_individual_{j}_active"] = False
+                                                st.success(f"Saved edited prompt as: {prompt_name.strip()}")
+                                                st.rerun()
+                                            else:
+                                                st.error("Please provide a prompt name")
                 
                 with col2:
                     st.subheader("🤝 Combined Prompt Result")
@@ -807,13 +1062,63 @@ Return only the combined system prompt without additional explanation.
                                     suggestion = suggest_prompt_from_response(edited_combined_response, query_text)
                                     st.session_state.combination_results['combined_prompt'] = suggestion
                                     st.session_state.combination_results['combined_result']['system_prompt'] = suggestion
+                                    st.session_state.combination_results['combined_result']['edited'] = True
                                     st.success("Combined prompt updated based on edited response!")
                                     st.rerun()
                     
                     if st.button("🔮 Suggest Prompt for Combined Response"):
                         with st.spinner("Generating prompt suggestion..."):
                             suggestion = suggest_prompt_from_response(edited_combined_response, query_text)
-                            st.text_area("Suggested Prompt:", value=suggestion, height=100, key="suggested_combined")
+                            st.write("**Suggested System Prompt:**")
+                            suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key="suggested_combined", disabled=True)
+                            
+                            col_save, col_save_run, col_edit = st.columns(3)
+                            with col_save:
+                                prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key="suggest_combined_name")
+                                if st.button("💾 Save as Prompt", key="save_suggest_combined"):
+                                    if prompt_name.strip():
+                                        st.session_state.prompts.append(suggestion)
+                                        st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.success(f"Saved as new prompt: {prompt_name.strip()}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Please provide a prompt name")
+                            with col_save_run:
+                                run_prompt_name = st.text_input("Prompt Name:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key="suggest_combined_run_name")
+                                if st.button("🏃 Save as Prompt and Run", key="save_run_suggest_combined"):
+                                    if run_prompt_name.strip():
+                                        st.session_state.prompts.append(suggestion)
+                                        st.session_state.prompt_names.append(run_prompt_name.strip())
+                                        with st.spinner("Running new prompt..."):
+                                            result = call_api(suggestion, query_text)
+                                            result.update({
+                                                'prompt_name': run_prompt_name.strip(),
+                                                'system_prompt': suggestion,
+                                                'query': query_text,
+                                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                'edited': False
+                                            })
+                                            st.session_state.test_results.append(result)
+                                        st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Please provide a prompt name")
+                            with col_edit:
+                                if st.button("✏️ Edit", key="edit_suggest_combined"):
+                                    st.session_state["edit_suggest_combined_active"] = True
+                            
+                            if st.session_state.get("edit_suggest_combined_active", False):
+                                edited_suggestion = st.text_area("Edit Suggested Prompt:", value=suggestion, height=100, key="edit_suggested_combined")
+                                if st.button("💾 Save Edited Prompt", key="save_edited_suggest_combined"):
+                                    prompt_name = st.text_input("Prompt Name for Edited Prompt:", placeholder=f"Suggested Prompt {len(st.session_state.prompts) + 1}", key="edit_suggest_combined_name")
+                                    if prompt_name.strip():
+                                        st.session_state.prompts.append(edited_suggestion)
+                                        st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.session_state["edit_suggest_combined_active"] = False
+                                        st.success(f"Saved edited prompt as: {prompt_name.strip()}")
+                                        st.rerun()
+                                    else:
+                                        st.error("Please provide a prompt name")
 
 # Export section
 export_data = []
@@ -926,7 +1231,7 @@ if export_data:
     with col2:
         if st.button("📋 Show DataFrame"):
             df = pd.DataFrame(export_data)
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width='stretch')
 
 st.markdown("---")
 st.markdown("""
@@ -934,12 +1239,12 @@ st.markdown("""
 - **✏️ Prompt Management:** Add, edit, and name prompts in all test modes
 - **🧪 Individual Testing:** Test multiple system prompts independently with editable responses
 - **🔗 Prompt Chaining:** Chain prompts where each step uses the previous output
-- **🤝 Prompt Combination:** Use AI to intelligently combine multiple prompts
-- **🎚️ Slider Strategy:** Custom influence weights for prompt combination
+- **🤝 Prompt Combination:** Use AI to intelligently combine multiple prompts with auto-adjusting weights
+- **🎚️ Slider Strategy:** Custom influence weights for prompt combination, auto-adjusted to sum to 100%
 - **🌡️ Temperature Control:** 0-100% slider to control AI creativity for prompt combination
-- **🔮 Smart Suggestions:** Generate prompt suggestions from desired responses
+- **🔮 Smart Suggestions:** Generate prompt suggestions with options to save, save and run, or edit
 - **📊 Comprehensive Export:** All results including individual, chain, and combination data
-- **💾 Response Editing:** Edit and save responses, maintain edit history
+- **💾 Response Editing:** Edit and save responses, with reverse prompt engineering
 """)
 
 # Requirements note
