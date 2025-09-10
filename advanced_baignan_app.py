@@ -14,7 +14,7 @@ load_dotenv()
 # Set page config
 st.set_page_config(
     page_title="BainGan",
-    page_icon="🔮🍆",
+    page_icon="🍆",
     layout="wide"
 )
 
@@ -242,14 +242,14 @@ def call_api(system_prompt, query):
             'status_code': 'N/A'
         }
 
-def suggest_prompt_from_response(target_response):
+def suggest_prompt_from_response(target_response, query):
     """Use Gemini to suggest a prompt that could generate the target response"""
     if not gemini_api_key:
         return "Gemini API key required for prompt suggestion"
     
     try:
         # Convert temperature from 0-100 to 0-2 scale for Gemini
-        gemini_temperature = (temperature / 100.0) * 2.0
+        gemini_temperature = (st.session_state.get('temperature', 50) / 100.0) * 2.0
         
         model = genai.GenerativeModel('gemini-2.0-flash-exp')
         
@@ -259,7 +259,7 @@ Based on the following desired response/output, suggest a system prompt that cou
 Target Response:
 {target_response}
 
-Original Query Context: {query_text}
+Original Query Context: {query}
 
 Please analyze the response style, tone, structure, and content approach, then suggest a comprehensive system prompt that would guide an AI to produce similar responses. Focus on:
 1. Response format and structure
@@ -345,16 +345,26 @@ with col2:
                     )
                     
                     if edited_response != result['response']:
-                        if st.button(f"💾 Save Edited Response", key=f"save_response_{i}"):
-                            st.session_state.test_results[i]['response'] = edited_response
-                            st.session_state.test_results[i]['edited'] = True
-                            st.success("Response updated!")
-                            st.rerun()
+                        col_save, col_reverse = st.columns(2)
+                        with col_save:
+                            if st.button(f"💾 Save Edited Response", key=f"save_response_{i}"):
+                                st.session_state.test_results[i]['response'] = edited_response
+                                st.session_state.test_results[i]['edited'] = True
+                                st.success("Response updated!")
+                                st.rerun()
+                        with col_reverse:
+                            if st.button(f"🔄 Reverse Prompt", key=f"reverse_{i}"):
+                                with st.spinner("Generating updated prompt..."):
+                                    suggestion = suggest_prompt_from_response(edited_response, result['query'])
+                                    st.session_state.prompts[i] = suggestion
+                                    st.session_state.test_results[i]['system_prompt'] = suggestion
+                                    st.success("Prompt updated based on edited response!")
+                                    st.rerun()
                     
                     # Prompt suggestion button
                     if st.button(f"🔮 Suggest Prompt for This Response", key=f"suggest_{i}"):
                         with st.spinner("Generating prompt suggestion..."):
-                            suggestion = suggest_prompt_from_response(edited_response)
+                            suggestion = suggest_prompt_from_response(edited_response, result['query'])
                             st.write("**Suggested System Prompt:**")
                             st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_{i}")
                     
@@ -441,15 +451,26 @@ with col2:
                 edited_final = st.text_area("Final Output (editable):", value=final_result['response'], height=150, key="edit_final_chain")
                 
                 if edited_final != final_result['response']:
-                    if st.button("💾 Save Final Response"):
-                        st.session_state.chain_results[-1]['response'] = edited_final
-                        st.session_state.chain_results[-1]['edited'] = True
-                        st.success("Final response updated!")
-                        st.rerun()
+                    col_save, col_reverse = st.columns(2)
+                    with col_save:
+                        if st.button("💾 Save Final Response"):
+                            st.session_state.chain_results[-1]['response'] = edited_final
+                            st.session_state.chain_results[-1]['edited'] = True
+                            st.success("Final response updated!")
+                            st.rerun()
+                    with col_reverse:
+                        if st.button("🔄 Reverse Prompt for Final"):
+                            with st.spinner("Generating updated prompt..."):
+                                suggestion = suggest_prompt_from_response(edited_final, final_result['input_query'])
+                                last_index = len(st.session_state.prompts) - 1
+                                st.session_state.prompts[last_index] = suggestion
+                                st.session_state.chain_results[-1]['system_prompt'] = suggestion
+                                st.success("Final prompt updated based on edited response!")
+                                st.rerun()
                 
                 if st.button("🔮 Suggest Prompt for Final Response"):
                     with st.spinner("Generating prompt suggestion..."):
-                        suggestion = suggest_prompt_from_response(edited_final)
+                        suggestion = suggest_prompt_from_response(edited_final, final_result['input_query'])
                         st.write("**Suggested System Prompt:**")
                         st.text_area("Suggested Prompt:", value=suggestion, height=100, key="suggested_final_chain")
                         
@@ -476,18 +497,31 @@ with col2:
                     )
                     
                     if edited_step_response != result['response']:
-                        if st.button(f"💾 Save Response", key=f"save_chain_response_{j}"):
-                            st.session_state.chain_results[j]['response'] = edited_step_response
-                            st.session_state.chain_results[j]['edited'] = True
-                            st.success("Step response updated!")
-                            st.rerun()
+                        col_save, col_reverse = st.columns(2)
+                        with col_save:
+                            if st.button(f"💾 Save Response", key=f"save_chain_response_{j}"):
+                                st.session_state.chain_results[j]['response'] = edited_step_response
+                                st.session_state.chain_results[j]['edited'] = True
+                                st.success("Step response updated!")
+                                st.rerun()
+                        with col_reverse:
+                            if st.button(f"🔄 Reverse Prompt", key=f"reverse_chain_{j}"):
+                                with st.spinner("Generating updated prompt..."):
+                                    suggestion = suggest_prompt_from_response(edited_step_response, result['input_query'])
+                                    st.session_state.prompts[j] = suggestion
+                                    st.session_state.chain_results[j]['system_prompt'] = suggestion
+                                    st.success("Prompt updated based on edited response!")
+                                    st.rerun()
                     
                     # Prompt suggestion button
                     if st.button(f"🔮 Suggest Prompt for This Response", key=f"suggest_chain_{j}"):
                         with st.spinner("Generating prompt suggestion..."):
-                            suggestion = suggest_prompt_from_response(edited_step_response)
+                            suggestion = suggest_prompt_from_response(edited_step_response, result['input_query'])
                             st.write("**Suggested System Prompt:**")
                             st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_chain_{j}")
+                    
+                    st.write("**Details:**")
+                    st.write(f"Status Code: {result['status_code']} | Time: {result['timestamp']}")
 
     elif test_mode == "Prompt Combination":
         st.header("🤝 Prompt Combination")
@@ -503,6 +537,7 @@ with col2:
             value=50,
             help="Controls creativity of AI responses. Lower = more focused, Higher = more creative"
         )
+        st.session_state.temperature = temperature
         
         if st.session_state.prompts:
             ensure_prompt_names()
@@ -567,7 +602,7 @@ with col2:
                     # Convert temperature from 0-100 to 0-2 scale for Gemini
                     gemini_temperature = (temperature / 100.0) * 2.0
                     
-                    model = genai.GenerativeModel('gemini-2.5-flash')
+                    model = genai.GenerativeModel('gemini-2.0-flash-exp')
                     
                     selected_prompt_texts = [st.session_state.prompts[i] for i in selected_prompts]
                     selected_prompt_names = [st.session_state.prompt_names[i] for i in selected_prompts]
@@ -630,6 +665,7 @@ Return only the combined system prompt without additional explanation.
                         st.session_state.combination_results = {
                             'individual_prompts': selected_prompt_texts,
                             'individual_names': selected_prompt_names,
+                            'selected_indices': selected_prompts,
                             'combined_prompt': combined_prompt,
                             'strategy': combination_strategy,
                             'temperature': temperature,
@@ -720,15 +756,27 @@ Return only the combined system prompt without additional explanation.
                             )
                             
                             if edited_individual_response != result['response']:
-                                if st.button(f"💾 Save Response", key=f"save_individual_{j}"):
-                                    st.session_state.combination_results['individual_results'][j]['response'] = edited_individual_response
-                                    st.session_state.combination_results['individual_results'][j]['edited'] = True
-                                    st.success("Response updated!")
-                                    st.rerun()
+                                col_save, col_reverse = st.columns(2)
+                                with col_save:
+                                    if st.button(f"💾 Save Response", key=f"save_individual_{j}"):
+                                        st.session_state.combination_results['individual_results'][j]['response'] = edited_individual_response
+                                        st.session_state.combination_results['individual_results'][j]['edited'] = True
+                                        st.success("Response updated!")
+                                        st.rerun()
+                                with col_reverse:
+                                    if st.button(f"🔄 Reverse Prompt", key=f"reverse_individual_{j}"):
+                                        with st.spinner("Generating updated prompt..."):
+                                            suggestion = suggest_prompt_from_response(edited_individual_response, query_text)
+                                            source_idx = st.session_state.combination_results['selected_indices'][j]
+                                            st.session_state.prompts[source_idx] = suggestion
+                                            st.session_state.combination_results['individual_prompts'][j] = suggestion
+                                            st.session_state.combination_results['individual_results'][j]['system_prompt'] = suggestion
+                                            st.success("Prompt updated based on edited response!")
+                                            st.rerun()
                             
                             if st.button(f"🔮 Suggest Prompt", key=f"suggest_individual_{j}"):
                                 with st.spinner("Generating prompt suggestion..."):
-                                    suggestion = suggest_prompt_from_response(edited_individual_response)
+                                    suggestion = suggest_prompt_from_response(edited_individual_response, query_text)
                                     st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_individual_{j}")
                 
                 with col2:
@@ -746,15 +794,25 @@ Return only the combined system prompt without additional explanation.
                     )
                     
                     if edited_combined_response != combined_result['response']:
-                        if st.button("💾 Save Combined Response"):
-                            st.session_state.combination_results['combined_result']['response'] = edited_combined_response
-                            st.session_state.combination_results['combined_result']['edited'] = True
-                            st.success("Combined response updated!")
-                            st.rerun()
+                        col_save, col_reverse = st.columns(2)
+                        with col_save:
+                            if st.button("💾 Save Combined Response"):
+                                st.session_state.combination_results['combined_result']['response'] = edited_combined_response
+                                st.session_state.combination_results['combined_result']['edited'] = True
+                                st.success("Combined response updated!")
+                                st.rerun()
+                        with col_reverse:
+                            if st.button("🔄 Reverse Prompt for Combined"):
+                                with st.spinner("Generating updated prompt..."):
+                                    suggestion = suggest_prompt_from_response(edited_combined_response, query_text)
+                                    st.session_state.combination_results['combined_prompt'] = suggestion
+                                    st.session_state.combination_results['combined_result']['system_prompt'] = suggestion
+                                    st.success("Combined prompt updated based on edited response!")
+                                    st.rerun()
                     
                     if st.button("🔮 Suggest Prompt for Combined Response"):
                         with st.spinner("Generating prompt suggestion..."):
-                            suggestion = suggest_prompt_from_response(edited_combined_response)
+                            suggestion = suggest_prompt_from_response(edited_combined_response, query_text)
                             st.text_area("Suggested Prompt:", value=suggestion, height=100, key="suggested_combined")
 
 # Export section
