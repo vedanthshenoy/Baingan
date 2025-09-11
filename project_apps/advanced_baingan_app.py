@@ -7,6 +7,7 @@ import io
 import google.generativeai as genai
 import os
 from dotenv import load_dotenv
+import uuid
 
 # Load environment variables
 load_dotenv()
@@ -33,6 +34,8 @@ if 'slider_weights' not in st.session_state:
     st.session_state.slider_weights = {}
 if 'last_selected_prompts' not in st.session_state:
     st.session_state.last_selected_prompts = []
+if 'response_ratings' not in st.session_state:
+    st.session_state.response_ratings = {}  # Store ratings for responses
 
 st.title("🔮 BainGan 🍆")
 st.markdown("Test **system prompts**, create **prompt chains**, and **combine prompts** with AI assistance")
@@ -144,23 +147,31 @@ def add_prompt_section():
     # Add new prompt
     col1, col2 = st.columns([3, 1])
     with col1:
-        new_prompt = st.text_area("Enter your system prompt:", height=100, key=f"new_prompt_input_{test_mode}")
+        new_prompt = st.text_area("Enter your system prompt:", height=100, key="new_prompt_input")
+        # Store the current input value for clearing after add
+        if 'temp_new_prompt' not in st.session_state:
+            st.session_state.temp_new_prompt = ""
+        st.session_state.temp_new_prompt = new_prompt
     with col2:
         st.write("") # spacing
-        new_prompt_name = st.text_input("Prompt Name:", placeholder=f"Prompt {len(st.session_state.prompts) + 1}", key=f"new_prompt_name_{test_mode}")
+        new_prompt_name = st.text_input("Prompt Name:", placeholder=f"Prompt {len(st.session_state.prompts) + 1}", key="new_prompt_name")
     
     col_add, col_clear = st.columns(2)
     with col_add:
-        if st.button("➕ Add System Prompt", type="primary", key=f"add_prompt_{test_mode}"):
+        if st.button("➕ Add System Prompt", type="primary", key="add_prompt"):
             if new_prompt.strip():
                 st.session_state.prompts.append(new_prompt.strip())
                 prompt_name = new_prompt_name.strip() if new_prompt_name.strip() else f"Prompt {len(st.session_state.prompts)}"
                 st.session_state.prompt_names.append(prompt_name)
                 st.success(f"Added: {prompt_name}")
+                # Clear the input fields
+                st.session_state.temp_new_prompt = ""
                 st.rerun()
+            else:
+                st.error("Please enter a prompt")
     
     with col_clear:
-        if st.button("🗑️ Clear All Prompts", key=f"clear_prompts_{test_mode}"):
+        if st.button("🗑️ Clear All Prompts", key="clear_prompts"):
             st.session_state.prompts = []
             st.session_state.prompt_names = []
             st.session_state.test_results = []
@@ -168,6 +179,8 @@ def add_prompt_section():
             st.session_state.combination_results = []
             st.session_state.slider_weights = {}
             st.session_state.last_selected_prompts = []
+            st.session_state.response_ratings = {}
+            st.session_state.temp_new_prompt = ""
             st.success("Cleared all prompts and results")
             st.rerun()
     
@@ -179,23 +192,23 @@ def add_prompt_section():
         for i in range(len(st.session_state.prompts)):
             with st.expander(f"{st.session_state.prompt_names[i]}: {st.session_state.prompts[i][:50]}..."):
                 # Edit prompt name
-                new_name = st.text_input("Name:", value=st.session_state.prompt_names[i], key=f"edit_name_{i}_{test_mode}")
+                new_name = st.text_input("Name:", value=st.session_state.prompt_names[i], key=f"edit_name_{i}")
                 if new_name != st.session_state.prompt_names[i]:
-                    if st.button(f"💾 Update Name", key=f"update_name_{i}_{test_mode}"):
+                    if st.button(f"💾 Update Name", key=f"update_name_{i}"):
                         st.session_state.prompt_names[i] = new_name
                         st.success(f"Updated name to: {new_name}")
                         st.rerun()
                 
                 # Edit prompt content
-                edited_prompt = st.text_area("Content:", value=st.session_state.prompts[i], height=100, key=f"edit_prompt_{i}_{test_mode}")
+                edited_prompt = st.text_area("Content:", value=st.session_state.prompts[i], height=100, key=f"edit_prompt_{i}")
                 if edited_prompt != st.session_state.prompts[i]:
-                    if st.button(f"💾 Update Content", key=f"update_content_{i}_{test_mode}"):
+                    if st.button(f"💾 Update Content", key=f"update_content_{i}"):
                         st.session_state.prompts[i] = edited_prompt
                         st.success("Updated prompt content")
                         st.rerun()
                 
                 # Remove prompt
-                if st.button(f"🗑️ Remove", key=f"remove_{i}_{test_mode}"):
+                if st.button(f"🗑️ Remove", key=f"remove_{i}"):
                     st.session_state.prompts.pop(i)
                     st.session_state.prompt_names.pop(i)
                     # Clean up results
@@ -206,6 +219,10 @@ def add_prompt_section():
                     # Remove from slider weights if present
                     if i in st.session_state.slider_weights:
                         del st.session_state.slider_weights[i]
+                    # Remove associated ratings
+                    for key in list(st.session_state.response_ratings.keys()):
+                        if key.startswith(f"test_{i}_") or key.startswith(f"chain_{i}_") or key.startswith(f"combination_individual_{i}_"):
+                            del st.session_state.response_ratings[key]
                     st.rerun()
 
 def call_api(system_prompt, query):
@@ -323,7 +340,8 @@ with col2:
                         'system_prompt': system_prompt,
                         'query': query_text,
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'edited': False
+                        'edited': False,
+                        'remark': 'Saved and ran'
                     })
 
                     st.session_state.test_results.append(result)
@@ -354,6 +372,16 @@ with col2:
                         key=f"edit_response_{i}"
                     )
                     
+                    # Rating system
+                    rating = st.slider(
+                        "Rate this response (0-10):",
+                        min_value=0,
+                        max_value=10,
+                        value=st.session_state.response_ratings.get(f"test_{i}", 5),
+                        key=f"rating_test_{i}"
+                    )
+                    st.session_state.response_ratings[f"test_{i}"] = rating
+                    
                     if edited_response != result['response']:
                         col_save, col_reverse = st.columns(2)
                         with col_save:
@@ -369,6 +397,7 @@ with col2:
                                     st.session_state.prompts[i] = suggestion
                                     st.session_state.test_results[i]['system_prompt'] = suggestion
                                     st.session_state.test_results[i]['edited'] = True
+                                    st.session_state.test_results[i]['remark'] = 'Saved and ran'
                                     st.success("Prompt updated based on edited response!")
                                     st.rerun()
                     
@@ -386,6 +415,17 @@ with col2:
                                     if prompt_name.strip():
                                         st.session_state.prompts.append(suggestion)
                                         st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.session_state.test_results.append({
+                                            'prompt_name': prompt_name.strip(),
+                                            'system_prompt': suggestion,
+                                            'query': query_text,
+                                            'response': 'Prompt saved but not executed',
+                                            'status': 'Not Executed',
+                                            'status_code': 'N/A',
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'edited': False,
+                                            'remark': 'Save only'
+                                        })
                                         st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                         st.rerun()
                                     else:
@@ -403,7 +443,8 @@ with col2:
                                                 'system_prompt': suggestion,
                                                 'query': query_text,
                                                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                'edited': False
+                                                'edited': False,
+                                                'remark': 'Saved and ran'
                                             })
                                             st.session_state.test_results.append(result)
                                         st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
@@ -421,6 +462,17 @@ with col2:
                                     if prompt_name.strip():
                                         st.session_state.prompts.append(edited_suggestion)
                                         st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.session_state.test_results.append({
+                                            'prompt_name': prompt_name.strip(),
+                                            'system_prompt': edited_suggestion,
+                                            'query': query_text,
+                                            'response': 'Prompt saved but not executed',
+                                            'status': 'Not Executed',
+                                            'status_code': 'N/A',
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'edited': False,
+                                            'remark': 'Save only'
+                                        })
                                         st.session_state[f"edit_suggest_{i}_active"] = False
                                         st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                         st.rerun()
@@ -428,7 +480,7 @@ with col2:
                                         st.error("Please provide a prompt name")
                     
                     st.write("**Details:**")
-                    st.write(f"Status Code: {result['status_code']} | Time: {result['timestamp']}")
+                    st.write(f"Status Code: {result['status_code']} | Time: {result['timestamp']} | Rating: {rating}/10 ({rating*10}%)")
 
     elif test_mode == "Prompt Chaining":
         st.header("🔗 Prompt Chaining")
@@ -482,7 +534,8 @@ with col2:
                         'system_prompt': system_prompt,
                         'input_query': current_query,
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'edited': False
+                        'edited': False,
+                        'remark': 'Saved and ran'
                     })
                     
                     st.session_state.chain_results.append(result)
@@ -510,6 +563,16 @@ with col2:
                 # Editable final response
                 edited_final = st.text_area("Final Output (editable):", value=final_result['response'], height=150, key="edit_final_chain")
                 
+                # Rating system
+                rating = st.slider(
+                    "Rate this response (0-10):",
+                    min_value=0,
+                    max_value=10,
+                    value=st.session_state.response_ratings.get("chain_final", 5),
+                    key="rating_chain_final"
+                )
+                st.session_state.response_ratings["chain_final"] = rating
+                
                 if edited_final != final_result['response']:
                     col_save, col_reverse = st.columns(2)
                     with col_save:
@@ -526,6 +589,7 @@ with col2:
                                 st.session_state.prompts[last_index] = suggestion
                                 st.session_state.chain_results[-1]['system_prompt'] = suggestion
                                 st.session_state.chain_results[-1]['edited'] = True
+                                st.session_state.chain_results[-1]['remark'] = 'Saved and ran'
                                 st.success("Final prompt updated based on edited response!")
                                 st.rerun()
                 
@@ -542,6 +606,17 @@ with col2:
                                 if prompt_name.strip():
                                     st.session_state.prompts.append(suggestion)
                                     st.session_state.prompt_names.append(prompt_name.strip())
+                                    st.session_state.test_results.append({
+                                        'prompt_name': prompt_name.strip(),
+                                        'system_prompt': suggestion,
+                                        'query': query_text,
+                                        'response': 'Prompt saved but not executed',
+                                        'status': 'Not Executed',
+                                        'status_code': 'N/A',
+                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        'edited': False,
+                                        'remark': 'Save only'
+                                    })
                                     st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                     st.rerun()
                                 else:
@@ -559,7 +634,8 @@ with col2:
                                             'system_prompt': suggestion,
                                             'query': query_text,
                                             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            'edited': False
+                                            'edited': False,
+                                            'remark': 'Saved and ran'
                                         })
                                         st.session_state.test_results.append(result)
                                     st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
@@ -577,6 +653,17 @@ with col2:
                                 if prompt_name.strip():
                                     st.session_state.prompts.append(edited_suggestion)
                                     st.session_state.prompt_names.append(prompt_name.strip())
+                                    st.session_state.test_results.append({
+                                        'prompt_name': prompt_name.strip(),
+                                        'system_prompt': edited_suggestion,
+                                        'query': query_text,
+                                        'response': 'Prompt saved but not executed',
+                                        'status': 'Not Executed',
+                                        'status_code': 'N/A',
+                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        'edited': False,
+                                        'remark': 'Save only'
+                                    })
                                     st.session_state["edit_suggest_final_active"] = False
                                     st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                     st.rerun()
@@ -605,6 +692,16 @@ with col2:
                         key=f"edit_chain_response_{j}"
                     )
                     
+                    # Rating system
+                    rating = st.slider(
+                        "Rate this response (0-10):",
+                        min_value=0,
+                        max_value=10,
+                        value=st.session_state.response_ratings.get(f"chain_{j}", 5),
+                        key=f"rating_chain_{j}"
+                    )
+                    st.session_state.response_ratings[f"chain_{j}"] = rating
+                    
                     if edited_step_response != result['response']:
                         col_save, col_reverse = st.columns(2)
                         with col_save:
@@ -620,6 +717,7 @@ with col2:
                                     st.session_state.prompts[j] = suggestion
                                     st.session_state.chain_results[j]['system_prompt'] = suggestion
                                     st.session_state.chain_results[j]['edited'] = True
+                                    st.session_state.chain_results[j]['remark'] = 'Saved and ran'
                                     st.success("Prompt updated based on edited response!")
                                     st.rerun()
                     
@@ -637,6 +735,17 @@ with col2:
                                     if prompt_name.strip():
                                         st.session_state.prompts.append(suggestion)
                                         st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.session_state.test_results.append({
+                                            'prompt_name': prompt_name.strip(),
+                                            'system_prompt': suggestion,
+                                            'query': query_text,
+                                            'response': 'Prompt saved but not executed',
+                                            'status': 'Not Executed',
+                                            'status_code': 'N/A',
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'edited': False,
+                                            'remark': 'Save only'
+                                        })
                                         st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                         st.rerun()
                                     else:
@@ -654,7 +763,8 @@ with col2:
                                                 'system_prompt': suggestion,
                                                 'query': query_text,
                                                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                'edited': False
+                                                'edited': False,
+                                                'remark': 'Saved and ran'
                                             })
                                             st.session_state.test_results.append(result)
                                         st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
@@ -672,6 +782,17 @@ with col2:
                                     if prompt_name.strip():
                                         st.session_state.prompts.append(edited_suggestion)
                                         st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.session_state.test_results.append({
+                                            'prompt_name': prompt_name.strip(),
+                                            'system_prompt': edited_suggestion,
+                                            'query': query_text,
+                                            'response': 'Prompt saved but not executed',
+                                            'status': 'Not Executed',
+                                            'status_code': 'N/A',
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'edited': False,
+                                            'remark': 'Save only'
+                                        })
                                         st.session_state[f"edit_suggest_chain_{j}_active"] = False
                                         st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                         st.rerun()
@@ -679,7 +800,7 @@ with col2:
                                         st.error("Please provide a prompt name")
                     
                     st.write("**Details:**")
-                    st.write(f"Status Code: {result['status_code']} | Time: {result['timestamp']}")
+                    st.write(f"Status Code: {result['status_code']} | Time: {result['timestamp']} | Rating: {rating}/10 ({rating*10}%)")
 
     elif test_mode == "Prompt Combination":
         st.header("🤝 Prompt Combination")
@@ -809,10 +930,7 @@ with col2:
                         total_weight = sum(st.session_state.slider_weights.get(idx, 0) for idx in selected_prompts)
                         normalized_weights = {k: (v/total_weight)*100 for k, v in st.session_state.slider_weights.items() if k in selected_prompts}
                         
-                        weight_info = "\n".join([
-                            f"{st.session_state.prompt_names[idx]} ({normalized_weights.get(idx, 0):.1f}% influence): {st.session_state.prompts[idx]}" 
-                            for idx in selected_prompts
-                        ])
+                        weight_info = "\n".join([f"{st.session_state.prompt_names[idx]} ({normalized_weights.get(idx, 0):.1f}% influence): {st.session_state.prompts[idx]}" for idx in selected_prompts])
                         
                         combination_prompt = f"""
 Please combine the following system prompts into one optimized prompt, using the specified influence weights to determine how much each prompt should contribute to the final result.
@@ -893,7 +1011,10 @@ Return only the combined system prompt without additional explanation.
                                 'prompt_index': i + 1,
                                 'prompt_name': name,
                                 'system_prompt': prompt,
-                                'edited': False
+                                'query': query_text,
+                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                'edited': False,
+                                'remark': 'Saved and ran'
                             })
                             individual_results.append(result)
                     
@@ -902,7 +1023,10 @@ Return only the combined system prompt without additional explanation.
                         combined_result = call_api(st.session_state.combination_results['combined_prompt'], query_text)
                         combined_result.update({
                             'system_prompt': st.session_state.combination_results['combined_prompt'],
-                            'edited': False
+                            'query': query_text,
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'edited': False,
+                            'remark': 'Saved and ran'
                         })
                     
                     st.session_state.combination_results['individual_results'] = individual_results
@@ -960,6 +1084,16 @@ Return only the combined system prompt without additional explanation.
                                 key=f"edit_individual_{j}"
                             )
                             
+                            # Rating system
+                            rating = st.slider(
+                                "Rate this response (0-10):",
+                                min_value=0,
+                                max_value=10,
+                                value=st.session_state.response_ratings.get(f"combination_individual_{j}", 5),
+                                key=f"rating_individual_{j}"
+                            )
+                            st.session_state.response_ratings[f"combination_individual_{j}"] = rating
+                            
                             if edited_individual_response != result['response']:
                                 col_save, col_reverse = st.columns(2)
                                 with col_save:
@@ -977,6 +1111,7 @@ Return only the combined system prompt without additional explanation.
                                             st.session_state.combination_results['individual_prompts'][j] = suggestion
                                             st.session_state.combination_results['individual_results'][j]['system_prompt'] = suggestion
                                             st.session_state.combination_results['individual_results'][j]['edited'] = True
+                                            st.session_state.combination_results['individual_results'][j]['remark'] = 'Saved and ran'
                                             st.success("Prompt updated based on edited response!")
                                             st.rerun()
                             
@@ -993,6 +1128,17 @@ Return only the combined system prompt without additional explanation.
                                             if prompt_name.strip():
                                                 st.session_state.prompts.append(suggestion)
                                                 st.session_state.prompt_names.append(prompt_name.strip())
+                                                st.session_state.test_results.append({
+                                                    'prompt_name': prompt_name.strip(),
+                                                    'system_prompt': suggestion,
+                                                    'query': query_text,
+                                                    'response': 'Prompt saved but not executed',
+                                                    'status': 'Not Executed',
+                                                    'status_code': 'N/A',
+                                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                    'edited': False,
+                                                    'remark': 'Save only'
+                                                })
                                                 st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                                 st.rerun()
                                             else:
@@ -1010,7 +1156,8 @@ Return only the combined system prompt without additional explanation.
                                                         'system_prompt': suggestion,
                                                         'query': query_text,
                                                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                        'edited': False
+                                                        'edited': False,
+                                                        'remark': 'Saved and ran'
                                                     })
                                                     st.session_state.test_results.append(result)
                                                 st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
@@ -1028,6 +1175,17 @@ Return only the combined system prompt without additional explanation.
                                             if prompt_name.strip():
                                                 st.session_state.prompts.append(edited_suggestion)
                                                 st.session_state.prompt_names.append(prompt_name.strip())
+                                                st.session_state.test_results.append({
+                                                    'prompt_name': prompt_name.strip(),
+                                                    'system_prompt': edited_suggestion,
+                                                    'query': query_text,
+                                                    'response': 'Prompt saved but not executed',
+                                                    'status': 'Not Executed',
+                                                    'status_code': 'N/A',
+                                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                    'edited': False,
+                                                    'remark': 'Save only'
+                                                })
                                                 st.session_state[f"edit_suggest_individual_{j}_active"] = False
                                                 st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                                 st.rerun()
@@ -1048,6 +1206,16 @@ Return only the combined system prompt without additional explanation.
                         key="edit_combined_response"
                     )
                     
+                    # Rating system
+                    rating = st.slider(
+                        "Rate this response (0-10):",
+                        min_value=0,
+                        max_value=10,
+                        value=st.session_state.response_ratings.get("combination_combined", 5),
+                        key="rating_combined"
+                    )
+                    st.session_state.response_ratings["combination_combined"] = rating
+                    
                     if edited_combined_response != combined_result['response']:
                         col_save, col_reverse = st.columns(2)
                         with col_save:
@@ -1063,6 +1231,7 @@ Return only the combined system prompt without additional explanation.
                                     st.session_state.combination_results['combined_prompt'] = suggestion
                                     st.session_state.combination_results['combined_result']['system_prompt'] = suggestion
                                     st.session_state.combination_results['combined_result']['edited'] = True
+                                    st.session_state.combination_results['combined_result']['remark'] = 'Saved and ran'
                                     st.success("Combined prompt updated based on edited response!")
                                     st.rerun()
                     
@@ -1079,6 +1248,17 @@ Return only the combined system prompt without additional explanation.
                                     if prompt_name.strip():
                                         st.session_state.prompts.append(suggestion)
                                         st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.session_state.test_results.append({
+                                            'prompt_name': prompt_name.strip(),
+                                            'system_prompt': suggestion,
+                                            'query': query_text,
+                                            'response': 'Prompt saved but not executed',
+                                            'status': 'Not Executed',
+                                            'status_code': 'N/A',
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'edited': False,
+                                            'remark': 'Save only'
+                                        })
                                         st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                         st.rerun()
                                     else:
@@ -1096,7 +1276,8 @@ Return only the combined system prompt without additional explanation.
                                                 'system_prompt': suggestion,
                                                 'query': query_text,
                                                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                'edited': False
+                                                'edited': False,
+                                                'remark': 'Saved and ran'
                                             })
                                             st.session_state.test_results.append(result)
                                         st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
@@ -1114,48 +1295,77 @@ Return only the combined system prompt without additional explanation.
                                     if prompt_name.strip():
                                         st.session_state.prompts.append(edited_suggestion)
                                         st.session_state.prompt_names.append(prompt_name.strip())
+                                        st.session_state.test_results.append({
+                                            'prompt_name': prompt_name.strip(),
+                                            'system_prompt': edited_suggestion,
+                                            'query': query_text,
+                                            'response': 'Prompt saved but not executed',
+                                            'status': 'Not Executed',
+                                            'status_code': 'N/A',
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'edited': False,
+                                            'remark': 'Save only'
+                                        })
                                         st.session_state["edit_suggest_combined_active"] = False
                                         st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                         st.rerun()
                                     else:
                                         st.error("Please provide a prompt name")
 
+# Initialize export_data in session state if not already present
+if 'export_data' not in st.session_state:
+    st.session_state.export_data = []
+
 # Export section
-export_data = []
+export_data = st.session_state.export_data
 
 # Individual test results
 if st.session_state.test_results:
-    for result in st.session_state.test_results:
-        export_data.append({
-            'test_type': 'Individual',
-            'prompt_name': result.get('prompt_name', 'Unknown'),
-            'system_prompt': result['system_prompt'],
-            'query': result['query'],
-            'response': result['response'],
-            'status': result['status'],
-            'status_code': result.get('status_code', 'N/A'),
-            'timestamp': result['timestamp'],
-            'edited': result.get('edited', False),
-            'step': None,
-            'input_query': None
-        })
+    for i, result in enumerate(st.session_state.test_results):
+        # Create a unique identifier for the result
+        unique_id = f"Individual_{result.get('prompt_name', 'Unknown')}_{result['timestamp']}_{i}"
+        # Check if this result is already in export_data to avoid duplicates
+        if not any(d.get('unique_id') == unique_id for d in export_data):
+            export_data.append({
+                'unique_id': unique_id,  # Added for duplicate checking
+                'test_type': 'Individual',
+                'prompt_name': result.get('prompt_name', 'Unknown'),
+                'system_prompt': result['system_prompt'],
+                'query': result['query'],
+                'response': result['response'],
+                'status': result['status'],
+                'status_code': result.get('status_code', 'N/A'),
+                'timestamp': result['timestamp'],
+                'edited': result.get('edited', False),
+                'step': None,
+                'input_query': None,
+                'rating': st.session_state.response_ratings.get(f"test_{i}", 0) * 10,  # Convert to percentage
+                'remark': result.get('remark', 'Saved and ran')
+            })
 
 # Chain results
 if st.session_state.chain_results:
-    for result in st.session_state.chain_results:
-        export_data.append({
-            'test_type': 'Chain',
-            'prompt_name': result.get('prompt_name', 'Unknown'),
-            'system_prompt': result['system_prompt'],
-            'query': query_text,
-            'response': result['response'],
-            'status': result['status'],
-            'status_code': result.get('status_code', 'N/A'),
-            'timestamp': result['timestamp'],
-            'edited': result.get('edited', False),
-            'step': result.get('step'),
-            'input_query': result.get('input_query')
-        })
+    for j, result in enumerate(st.session_state.chain_results):
+        # Create a unique identifier for the result
+        unique_id = f"Chain_{result.get('prompt_name', 'Unknown')}_{result['timestamp']}_{result.get('step')}"
+        # Check if this result is already in export_data to avoid duplicates
+        if not any(d.get('unique_id') == unique_id for d in export_data):
+            export_data.append({
+                'unique_id': unique_id,  # Added for duplicate checking
+                'test_type': 'Chain',
+                'prompt_name': result.get('prompt_name', 'Unknown'),
+                'system_prompt': result['system_prompt'],
+                'query': query_text,
+                'response': result['response'],
+                'status': result['status'],
+                'status_code': result.get('status_code', 'N/A'),
+                'timestamp': result['timestamp'],
+                'edited': result.get('edited', False),
+                'step': result.get('step'),
+                'input_query': result.get('input_query'),
+                'rating': st.session_state.response_ratings.get(f"chain_{j}", 0) * 10,  # Convert to percentage
+                'remark': result.get('remark', 'Saved and ran')
+            })
 
 # Combination results
 if st.session_state.combination_results:
@@ -1163,42 +1373,56 @@ if st.session_state.combination_results:
     
     # Individual results from combination
     if combination_data.get('individual_results'):
-        for result in combination_data['individual_results']:
+        for j, result in enumerate(combination_data['individual_results']):
+            # Create a unique identifier for the result
+            unique_id = f"Combination_Individual_{result.get('prompt_name', 'Unknown')}_{combination_data['timestamp']}_{j}"
+            # Check if this result is already in export_data to avoid duplicates
+            if not any(d.get('unique_id') == unique_id for d in export_data):
+                export_data.append({
+                    'unique_id': unique_id,  # Added for duplicate checking
+                    'test_type': 'Combination_Individual',
+                    'prompt_name': result.get('prompt_name', 'Unknown'),
+                    'system_prompt': result.get('system_prompt', ''),
+                    'query': query_text,
+                    'response': result['response'],
+                    'status': result['status'],
+                    'status_code': result.get('status_code', 'N/A'),
+                    'timestamp': combination_data['timestamp'],
+                    'edited': result.get('edited', False),
+                    'step': None,
+                    'input_query': None,
+                    'combination_strategy': combination_data.get('strategy'),
+                    'combination_temperature': combination_data.get('temperature'),
+                    'slider_weights': str(combination_data.get('slider_weights')) if combination_data.get('slider_weights') else None,
+                    'rating': st.session_state.response_ratings.get(f"combination_individual_{j}", 0) * 10,  # Convert to percentage
+                    'remark': result.get('remark', 'Saved and ran')
+                })
+    
+    # Combined result
+    if combination_data.get('combined_result'):
+        # Create a unique identifier for the result
+        unique_id = f"Combination_Combined_{combination_data['timestamp']}"
+        # Check if this result is already in export_data to avoid duplicates
+        if not any(d.get('unique_id') == unique_id for d in export_data):
             export_data.append({
-                'test_type': 'Combination_Individual',
-                'prompt_name': result.get('prompt_name', 'Unknown'),
-                'system_prompt': result.get('system_prompt', ''),
+                'unique_id': unique_id,  # Added for duplicate checking
+                'test_type': 'Combination_Combined',
+                'prompt_name': 'AI_Combined',
+                'system_prompt': combination_data['combined_prompt'],
                 'query': query_text,
-                'response': result['response'],
-                'status': result['status'],
-                'status_code': result.get('status_code', 'N/A'),
+                'response': combination_data['combined_result']['response'],
+                'status': combination_data['combined_result']['status'],
+                'status_code': combination_data['combined_result'].get('status_code', 'N/A'),
                 'timestamp': combination_data['timestamp'],
-                'edited': result.get('edited', False),
+                'edited': combination_data['combined_result'].get('edited', False),
                 'step': None,
                 'input_query': None,
                 'combination_strategy': combination_data.get('strategy'),
                 'combination_temperature': combination_data.get('temperature'),
-                'slider_weights': str(combination_data.get('slider_weights')) if combination_data.get('slider_weights') else None
+                'slider_weights': str(combination_data.get('slider_weights')) if combination_data.get('slider_weights') else None,
+                'rating': st.session_state.response_ratings.get("combination_combined", 0) * 10,  # Convert to percentage
+                'remark': combination_data['combined_result'].get('remark', 'Saved and ran')
             })
-    
-    # Combined result
-    if combination_data.get('combined_result'):
-        export_data.append({
-            'test_type': 'Combination_Combined',
-            'prompt_name': 'AI_Combined',
-            'system_prompt': combination_data['combined_prompt'],
-            'query': query_text,
-            'response': combination_data['combined_result']['response'],
-            'status': combination_data['combined_result']['status'],
-            'status_code': combination_data['combined_result'].get('status_code', 'N/A'),
-            'timestamp': combination_data['timestamp'],
-            'edited': combination_data['combined_result'].get('edited', False),
-            'step': None,
-            'input_query': None,
-            'combination_strategy': combination_data.get('strategy'),
-            'combination_temperature': combination_data.get('temperature'),
-            'slider_weights': str(combination_data.get('slider_weights')) if combination_data.get('slider_weights') else None
-        })
 
 if export_data:
     st.header("💾 Export Results")
@@ -1243,7 +1467,8 @@ st.markdown("""
 - **🎚️ Slider Strategy:** Custom influence weights for prompt combination, auto-adjusted to sum to 100%
 - **🌡️ Temperature Control:** 0-100% slider to control AI creativity for prompt combination
 - **🔮 Smart Suggestions:** Generate prompt suggestions with options to save, save and run, or edit
-- **📊 Comprehensive Export:** All results including individual, chain, and combination data
+- **⭐ Response Rating:** Rate all responses (0-10, stored as percentage in export)
+- **📊 Comprehensive Export:** All results including individual, chain, and combination data with ratings and remarks
 - **💾 Response Editing:** Edit and save responses, with reverse prompt engineering
 """)
 
