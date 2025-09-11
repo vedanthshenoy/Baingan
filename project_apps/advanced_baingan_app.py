@@ -813,7 +813,7 @@ with col2:
             "🌡️ AI Temperature (Creativity)",
             min_value=0,
             max_value=100,
-            value=50,
+            value=0,
             help="Controls creativity of AI responses. Lower = more focused, Higher = more creative"
         )
         st.session_state.temperature = temperature
