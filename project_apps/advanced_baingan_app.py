@@ -144,17 +144,17 @@ def add_prompt_section():
     """Common section for adding/editing prompts"""
     st.subheader("✏️ Prompt Management")
     
+    # Use a unique key suffix to force widget refresh after adding
+    if 'prompt_input_key_suffix' not in st.session_state:
+        st.session_state.prompt_input_key_suffix = str(uuid.uuid4())
+    
     # Add new prompt
     col1, col2 = st.columns([3, 1])
     with col1:
-        new_prompt = st.text_area("Enter your system prompt:", height=100, key="new_prompt_input")
-        # Store the current input value for clearing after add
-        if 'temp_new_prompt' not in st.session_state:
-            st.session_state.temp_new_prompt = ""
-        st.session_state.temp_new_prompt = new_prompt
+        new_prompt = st.text_area("Enter your system prompt:", height=100, key=f"new_prompt_input_{st.session_state.prompt_input_key_suffix}")
     with col2:
-        st.write("") # spacing
-        new_prompt_name = st.text_input("Prompt Name:", placeholder=f"Prompt {len(st.session_state.prompts) + 1}", key="new_prompt_name")
+        st.write("")  # spacing
+        new_prompt_name = st.text_input("Prompt Name:", placeholder=f"Prompt {len(st.session_state.prompts) + 1}", key=f"new_prompt_name_{st.session_state.prompt_input_key_suffix}")
     
     col_add, col_clear = st.columns(2)
     with col_add:
@@ -163,10 +163,10 @@ def add_prompt_section():
                 st.session_state.prompts.append(new_prompt.strip())
                 prompt_name = new_prompt_name.strip() if new_prompt_name.strip() else f"Prompt {len(st.session_state.prompts)}"
                 st.session_state.prompt_names.append(prompt_name)
+                # Update key suffix to force widget refresh
+                st.session_state.prompt_input_key_suffix = str(uuid.uuid4())
                 st.success(f"Added: {prompt_name}")
-                # Clear the input fields
-                st.session_state.temp_new_prompt = ""
-                st.rerun()
+                st.rerun()  # Rerun to refresh the UI with new widget keys
             else:
                 st.error("Please enter a prompt")
     
@@ -180,7 +180,7 @@ def add_prompt_section():
             st.session_state.slider_weights = {}
             st.session_state.last_selected_prompts = []
             st.session_state.response_ratings = {}
-            st.session_state.temp_new_prompt = ""
+            st.session_state.prompt_input_key_suffix = str(uuid.uuid4())  # Reset key suffix
             st.success("Cleared all prompts and results")
             st.rerun()
     
