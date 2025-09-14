@@ -3,6 +3,7 @@ import google.generativeai as genai
 from datetime import datetime
 from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
+from app.export import save_export_entry
 
 def render_prompt_combination(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func, gemini_api_key):
     st.header("🤝 Prompt Combination")
@@ -18,6 +19,8 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
         help="Controls creativity of AI responses. Lower = more focused, Higher = more creative"
     )
     st.session_state.temperature = temperature
+    
+    selected_prompts = []  # Initialize to avoid UnboundLocalError
     
     if st.session_state.prompts:
         ensure_prompt_names()
@@ -100,15 +103,18 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
     else:
         st.info("Add system prompts first to combine them")
     
-    if st.button("🤖 Combine Prompts with AI", type="primary", disabled=not (gemini_api_key and st.session_state.prompts and selected_prompts)):
+    if st.button("🤖 Combine Prompts with AI", type="primary", disabled=not (gemini_api_key and st.session_state.prompts)):
         if not gemini_api_key:
             st.error("Please configure Gemini API key")
-        elif not selected_prompts or len(selected_prompts) < 2:
+        elif not st.session_state.prompts:
+            st.error("Please add at least one system prompt")
+        elif len(selected_prompts) < 2:
             st.error("Please select at least 2 prompts to combine")
         elif combination_strategy == "Slider - Custom influence weights" and sum(st.session_state.slider_weights.get(idx, 0) for idx in selected_prompts) == 0:
             st.error("Please set at least one prompt weight > 0%")
         else:
             try:
+                genai.configure(api_key=gemini_api_key)
                 gemini_temperature = (temperature / 100.0) * 2.0
                 
                 model = genai.GenerativeModel('gemini-2.0-flash-exp')
@@ -204,6 +210,16 @@ Return only the combined system prompt without additional explanation.
                             'edited': False,
                             'remark': 'Saved and ran'
                         })
+                        save_export_entry(
+                            prompt_name=name,
+                            system_prompt=prompt,
+                            query=query_text,
+                            response=result['response'] if 'response' in result else None,
+                            mode="Combination_Individual",
+                            remark="Saved and ran",
+                            status=result['status'],
+                            status_code=result.get('status_code', 'N/A')
+                        )
                         individual_results.append(result)
                 
                 with st.spinner("Testing combined prompt..."):
@@ -215,6 +231,16 @@ Return only the combined system prompt without additional explanation.
                         'edited': False,
                         'remark': 'Saved and ran'
                     })
+                    save_export_entry(
+                        prompt_name="AI_Combined",
+                        system_prompt=st.session_state.combination_results['combined_prompt'],
+                        query=query_text,
+                        response=combined_result['response'] if 'response' in combined_result else None,
+                        mode="Combination_Combined",
+                        remark="Saved and ran",
+                        status=combined_result['status'],
+                        status_code=combined_result.get('status_code', 'N/A')
+                    )
                 
                 st.session_state.combination_results['individual_results'] = individual_results
                 st.session_state.combination_results['combined_result'] = combined_result
@@ -238,6 +264,17 @@ Return only the combined system prompt without additional explanation.
                 if st.session_state.combination_results.get('combined_result'):
                     st.session_state.combination_results['combined_result']['system_prompt'] = combined_prompt_text
                     st.session_state.combination_results['combined_result']['edited'] = True
+                    save_export_entry(
+                        prompt_name="AI_Combined",
+                        system_prompt=combined_prompt_text,
+                        query=query_text,
+                        response=st.session_state.combination_results['combined_result']['response'] if 'response' in st.session_state.combination_results['combined_result'] else None,
+                        mode="Combination_Combined",
+                        remark="Edited and saved",
+                        status=st.session_state.combination_results['combined_result']['status'],
+                        status_code=st.session_state.combination_results['combined_result'].get('status_code', 'N/A'),
+                        edited=True
+                    )
                 st.success("Combined prompt updated!")
                 st.rerun()
         
@@ -282,11 +319,23 @@ Return only the combined system prompt without additional explanation.
                                 if st.button(f"💾 Save Response", key=f"save_individual_{j}"):
                                     st.session_state.combination_results['individual_results'][j]['response'] = edited_individual_response
                                     st.session_state.combination_results['individual_results'][j]['edited'] = True
+                                    save_export_entry(
+                                        prompt_name=result['prompt_name'],
+                                        system_prompt=result['system_prompt'],
+                                        query=query_text,
+                                        response=edited_individual_response,
+                                        mode="Combination_Individual",
+                                        remark="Edited and saved",
+                                        status=result['status'],
+                                        status_code=result.get('status_code', 'N/A'),
+                                        edited=True
+                                    )
                                     st.success("Response updated!")
                                     st.rerun()
                             with col_reverse:
                                 if st.button(f"🔄 Reverse Prompt", key=f"reverse_individual_{j}"):
                                     with st.spinner("Generating updated prompt..."):
+                                        genai.configure(api_key=gemini_api_key)  # Configure API key
                                         suggestion = suggest_func(edited_individual_response, query_text)
                                         source_idx = st.session_state.combination_results['selected_indices'][j]
                                         st.session_state.prompts[source_idx] = suggestion
@@ -294,11 +343,23 @@ Return only the combined system prompt without additional explanation.
                                         st.session_state.combination_results['individual_results'][j]['system_prompt'] = suggestion
                                         st.session_state.combination_results['individual_results'][j]['edited'] = True
                                         st.session_state.combination_results['individual_results'][j]['remark'] = 'Saved and ran'
+                                        save_export_entry(
+                                            prompt_name=result['prompt_name'],
+                                            system_prompt=suggestion,
+                                            query=query_text,
+                                            response=edited_individual_response,
+                                            mode="Combination_Individual",
+                                            remark="Reverse prompt generated",
+                                            status=result['status'],
+                                            status_code=result.get('status_code', 'N/A'),
+                                            edited=True
+                                        )
                                         st.success("Prompt updated based on edited response!")
                                         st.rerun()
                         
                         if st.button(f"🔮 Suggest Prompt", key=f"suggest_individual_{j}"):
                             with st.spinner("Generating prompt suggestion..."):
+                                genai.configure(api_key=gemini_api_key)  # Configure API key
                                 suggestion = suggest_func(edited_individual_response, query_text)
                                 st.write("**Suggested System Prompt:**")
                                 suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_individual_{j}", disabled=True)
@@ -321,6 +382,16 @@ Return only the combined system prompt without additional explanation.
                                                 'edited': False,
                                                 'remark': 'Save only'
                                             })
+                                            save_export_entry(
+                                                prompt_name=prompt_name.strip(),
+                                                system_prompt=suggestion,
+                                                query=query_text,
+                                                response=None,
+                                                mode="Combination_Individual",
+                                                remark="Save only",
+                                                status="Not Executed",
+                                                status_code="N/A"
+                                            )
                                             st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                             st.rerun()
                                         else:
@@ -341,6 +412,16 @@ Return only the combined system prompt without additional explanation.
                                                     'edited': False,
                                                     'remark': 'Saved and ran'
                                                 })
+                                                save_export_entry(
+                                                    prompt_name=run_prompt_name.strip(),
+                                                    system_prompt=suggestion,
+                                                    query=query_text,
+                                                    response=result['response'] if 'response' in result else None,
+                                                    mode="Combination_Individual",
+                                                    remark="Saved and ran",
+                                                    status=result['status'],
+                                                    status_code=result.get('status_code', 'N/A')
+                                                )
                                                 st.session_state.test_results.append(result)
                                             st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
                                             st.rerun()
@@ -368,6 +449,16 @@ Return only the combined system prompt without additional explanation.
                                                 'edited': False,
                                                 'remark': 'Save only'
                                             })
+                                            save_export_entry(
+                                                prompt_name=prompt_name.strip(),
+                                                system_prompt=edited_suggestion,
+                                                query=query_text,
+                                                response=None,
+                                                mode="Combination_Individual",
+                                                remark="Save only",
+                                                status="Not Executed",
+                                                status_code="N/A"
+                                            )
                                             st.session_state[f"edit_suggest_individual_{j}_active"] = False
                                             st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                             st.rerun()
@@ -403,21 +494,45 @@ Return only the combined system prompt without additional explanation.
                         if st.button("💾 Save Combined Response"):
                             st.session_state.combination_results['combined_result']['response'] = edited_combined_response
                             st.session_state.combination_results['combined_result']['edited'] = True
+                            save_export_entry(
+                                prompt_name="AI_Combined",
+                                system_prompt=st.session_state.combination_results['combined_prompt'],
+                                query=query_text,
+                                response=edited_combined_response,
+                                mode="Combination_Combined",
+                                remark="Edited and saved",
+                                status=combined_result['status'],
+                                status_code=combined_result.get('status_code', 'N/A'),
+                                edited=True
+                            )
                             st.success("Combined response updated!")
                             st.rerun()
                     with col_reverse:
                         if st.button("🔄 Reverse Prompt for Combined"):
                             with st.spinner("Generating updated prompt..."):
+                                genai.configure(api_key=gemini_api_key)  # Configure API key
                                 suggestion = suggest_func(edited_combined_response, query_text)
                                 st.session_state.combination_results['combined_prompt'] = suggestion
                                 st.session_state.combination_results['combined_result']['system_prompt'] = suggestion
                                 st.session_state.combination_results['combined_result']['edited'] = True
                                 st.session_state.combination_results['combined_result']['remark'] = 'Saved and ran'
+                                save_export_entry(
+                                    prompt_name="AI_Combined",
+                                    system_prompt=suggestion,
+                                    query=query_text,
+                                    response=edited_combined_response,
+                                    mode="Combination_Combined",
+                                    remark="Reverse prompt generated",
+                                    status=combined_result['status'],
+                                    status_code=combined_result.get('status_code', 'N/A'),
+                                    edited=True
+                                )
                                 st.success("Combined prompt updated based on edited response!")
                                 st.rerun()
                 
                 if st.button("🔮 Suggest Prompt for Combined Response"):
                     with st.spinner("Generating prompt suggestion..."):
+                        genai.configure(api_key=gemini_api_key)  # Configure API key
                         suggestion = suggest_func(edited_combined_response, query_text)
                         st.write("**Suggested System Prompt:**")
                         suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key="suggested_combined", disabled=True)
@@ -440,6 +555,16 @@ Return only the combined system prompt without additional explanation.
                                         'edited': False,
                                         'remark': 'Save only'
                                     })
+                                    save_export_entry(
+                                        prompt_name=prompt_name.strip(),
+                                        system_prompt=suggestion,
+                                        query=query_text,
+                                        response=None,
+                                        mode="Combination_Combined",
+                                        remark="Save only",
+                                        status="Not Executed",
+                                        status_code="N/A"
+                                    )
                                     st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                     st.rerun()
                                 else:
@@ -460,6 +585,16 @@ Return only the combined system prompt without additional explanation.
                                             'edited': False,
                                             'remark': 'Saved and ran'
                                         })
+                                        save_export_entry(
+                                            prompt_name=run_prompt_name.strip(),
+                                            system_prompt=suggestion,
+                                            query=query_text,
+                                            response=result['response'] if 'response' in result else None,
+                                            mode="Combination_Combined",
+                                            remark="Saved and ran",
+                                            status=result['status'],
+                                            status_code=result.get('status_code', 'N/A')
+                                        )
                                         st.session_state.test_results.append(result)
                                     st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
                                     st.rerun()
@@ -487,6 +622,16 @@ Return only the combined system prompt without additional explanation.
                                         'edited': False,
                                         'remark': 'Save only'
                                     })
+                                    save_export_entry(
+                                        prompt_name=prompt_name.strip(),
+                                        system_prompt=edited_suggestion,
+                                        query=query_text,
+                                        response=None,
+                                        mode="Combination_Combined",
+                                        remark="Save only",
+                                        status="Not Executed",
+                                        status_code="N/A"
+                                    )
                                     st.session_state["edit_suggest_combined_active"] = False
                                     st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                     st.rerun()

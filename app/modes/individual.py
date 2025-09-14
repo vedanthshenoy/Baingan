@@ -1,7 +1,9 @@
 import streamlit as st
+import google.generativeai as genai
 from datetime import datetime
 from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
+from app.export import save_export_entry
 
 def render_individual_testing(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func):
     st.header("🧪 Individual Testing")
@@ -31,7 +33,16 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                     'edited': False,
                     'remark': 'Saved and ran'
                 })
-
+                save_export_entry(
+                    prompt_name=prompt_name,
+                    system_prompt=system_prompt,
+                    query=query_text,
+                    response=result['response'] if 'response' in result else None,
+                    mode="Individual",
+                    remark="Saved and ran",
+                    status=result['status'],
+                    status_code=result.get('status_code', 'N/A')
+                )
                 st.session_state.test_results.append(result)
                 progress_bar.progress((i + 1) / len(st.session_state.prompts))
             
@@ -74,21 +85,45 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                         if st.button(f"💾 Save Edited Response", key=f"save_response_{i}"):
                             st.session_state.test_results[i]['response'] = edited_response
                             st.session_state.test_results[i]['edited'] = True
+                            save_export_entry(
+                                prompt_name=result['prompt_name'],
+                                system_prompt=result['system_prompt'],
+                                query=query_text,
+                                response=edited_response,
+                                mode="Individual",
+                                remark="Edited and saved",
+                                status=result['status'],
+                                status_code=result.get('status_code', 'N/A'),
+                                edited=True
+                            )
                             st.success("Response updated!")
                             st.rerun()
                     with col_reverse:
                         if st.button(f"🔄 Reverse Prompt", key=f"reverse_{i}"):
                             with st.spinner("Generating updated prompt..."):
+                                genai.configure(api_key=st.session_state.get('gemini_api_key'))  # Configure API key
                                 suggestion = suggest_func(edited_response, result['query'])
                                 st.session_state.prompts[i] = suggestion
                                 st.session_state.test_results[i]['system_prompt'] = suggestion
                                 st.session_state.test_results[i]['edited'] = True
                                 st.session_state.test_results[i]['remark'] = 'Saved and ran'
+                                save_export_entry(
+                                    prompt_name=result['prompt_name'],
+                                    system_prompt=suggestion,
+                                    query=query_text,
+                                    response=edited_response,
+                                    mode="Individual",
+                                    remark="Reverse prompt generated",
+                                    status=result['status'],
+                                    status_code=result.get('status_code', 'N/A'),
+                                    edited=True
+                                )
                                 st.success("Prompt updated based on edited response!")
                                 st.rerun()
                 
                 if st.button(f"🔮 Suggest Prompt for This Response", key=f"suggest_{i}"):
                     with st.spinner("Generating prompt suggestion..."):
+                        genai.configure(api_key=st.session_state.get('gemini_api_key'))  # Configure API key
                         suggestion = suggest_func(edited_response, result['query'])
                         st.write("**Suggested System Prompt:**")
                         suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_{i}", disabled=True)
@@ -111,6 +146,16 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                                         'edited': False,
                                         'remark': 'Save only'
                                     })
+                                    save_export_entry(
+                                        prompt_name=prompt_name.strip(),
+                                        system_prompt=suggestion,
+                                        query=query_text,
+                                        response=None,
+                                        mode="Individual",
+                                        remark="Save only",
+                                        status="Not Executed",
+                                        status_code="N/A"
+                                    )
                                     st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                     st.rerun()
                                 else:
@@ -131,6 +176,16 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                                             'edited': False,
                                             'remark': 'Saved and ran'
                                         })
+                                        save_export_entry(
+                                            prompt_name=run_prompt_name.strip(),
+                                            system_prompt=suggestion,
+                                            query=query_text,
+                                            response=result['response'] if 'response' in result else None,
+                                            mode="Individual",
+                                            remark="Saved and ran",
+                                            status=result['status'],
+                                            status_code=result.get('status_code', 'N/A')
+                                        )
                                         st.session_state.test_results.append(result)
                                     st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
                                     st.rerun()
@@ -158,6 +213,16 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                                         'edited': False,
                                         'remark': 'Save only'
                                     })
+                                    save_export_entry(
+                                        prompt_name=prompt_name.strip(),
+                                        system_prompt=edited_suggestion,
+                                        query=query_text,
+                                        response=None,
+                                        mode="Individual",
+                                        remark="Save only",
+                                        status="Not Executed",
+                                        status_code="N/A"
+                                    )
                                     st.session_state[f"edit_suggest_{i}_active"] = False
                                     st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                     st.rerun()

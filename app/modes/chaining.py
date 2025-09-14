@@ -1,7 +1,9 @@
 import streamlit as st
+import google.generativeai as genai
 from datetime import datetime
 from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
+from app.export import save_export_entry
 
 def render_prompt_chaining(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func):
     st.header("🔗 Prompt Chaining")
@@ -57,7 +59,18 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     'edited': False,
                     'remark': 'Saved and ran'
                 })
-                
+                save_export_entry(
+                    prompt_name=prompt_name,
+                    system_prompt=system_prompt,
+                    query=query_text,
+                    response=result['response'] if 'response' in result else None,
+                    mode="Chain",
+                    remark="Saved and ran",
+                    status=result['status'],
+                    status_code=result.get('status_code', 'N/A'),
+                    step=i + 1,
+                    input_query=current_query
+                )
                 st.session_state.chain_results.append(result)
                 
                 if result['status'] != 'Success':
@@ -94,22 +107,50 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     if st.button("💾 Save Final Response"):
                         st.session_state.chain_results[-1]['response'] = edited_final
                         st.session_state.chain_results[-1]['edited'] = True
+                        save_export_entry(
+                            prompt_name=final_result['prompt_name'],
+                            system_prompt=final_result['system_prompt'],
+                            query=query_text,
+                            response=edited_final,
+                            mode="Chain",
+                            remark="Edited and saved",
+                            status=final_result['status'],
+                            status_code=final_result.get('status_code', 'N/A'),
+                            step=final_result['step'],
+                            input_query=final_result['input_query'],
+                            edited=True
+                        )
                         st.success("Final response updated!")
                         st.rerun()
                 with col_reverse:
                     if st.button("🔄 Reverse Prompt for Final"):
                         with st.spinner("Generating updated prompt..."):
+                            genai.configure(api_key=st.session_state.get('gemini_api_key'))  # Configure API key
                             suggestion = suggest_func(edited_final, final_result['input_query'])
                             last_index = len(st.session_state.prompts) - 1
                             st.session_state.prompts[last_index] = suggestion
                             st.session_state.chain_results[-1]['system_prompt'] = suggestion
                             st.session_state.chain_results[-1]['edited'] = True
                             st.session_state.chain_results[-1]['remark'] = 'Saved and ran'
+                            save_export_entry(
+                                prompt_name=final_result['prompt_name'],
+                                system_prompt=suggestion,
+                                query=query_text,
+                                response=edited_final,
+                                mode="Chain",
+                                remark="Reverse prompt generated",
+                                status=final_result['status'],
+                                status_code=final_result.get('status_code', 'N/A'),
+                                step=final_result['step'],
+                                input_query=final_result['input_query'],
+                                edited=True
+                            )
                             st.success("Final prompt updated based on edited response!")
                             st.rerun()
             
             if st.button("🔮 Suggest Prompt for Final Response"):
                 with st.spinner("Generating prompt suggestion..."):
+                    genai.configure(api_key=st.session_state.get('gemini_api_key'))  # Configure API key
                     suggestion = suggest_func(edited_final, final_result['input_query'])
                     st.write("**Suggested System Prompt:**")
                     suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key="suggested_final_chain", disabled=True)
@@ -132,6 +173,16 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     'edited': False,
                                     'remark': 'Save only'
                                 })
+                                save_export_entry(
+                                    prompt_name=prompt_name.strip(),
+                                    system_prompt=suggestion,
+                                    query=query_text,
+                                    response=None,
+                                    mode="Chain",
+                                    remark="Save only",
+                                    status="Not Executed",
+                                    status_code="N/A"
+                                )
                                 st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                 st.rerun()
                             else:
@@ -152,6 +203,16 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         'edited': False,
                                         'remark': 'Saved and ran'
                                     })
+                                    save_export_entry(
+                                        prompt_name=run_prompt_name.strip(),
+                                        system_prompt=suggestion,
+                                        query=query_text,
+                                        response=result['response'] if 'response' in result else None,
+                                        mode="Chain",
+                                        remark="Saved and ran",
+                                        status=result['status'],
+                                        status_code=result.get('status_code', 'N/A')
+                                    )
                                     st.session_state.test_results.append(result)
                                 st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
                                 st.rerun()
@@ -179,6 +240,16 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     'edited': False,
                                     'remark': 'Save only'
                                 })
+                                save_export_entry(
+                                    prompt_name=prompt_name.strip(),
+                                    system_prompt=edited_suggestion,
+                                    query=query_text,
+                                    response=None,
+                                    mode="Chain",
+                                    remark="Save only",
+                                    status="Not Executed",
+                                    status_code="N/A"
+                                )
                                 st.session_state["edit_suggest_final_active"] = False
                                 st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                 st.rerun()
@@ -220,21 +291,49 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         if st.button(f"💾 Save Response", key=f"save_chain_response_{j}"):
                             st.session_state.chain_results[j]['response'] = edited_step_response
                             st.session_state.chain_results[j]['edited'] = True
+                            save_export_entry(
+                                prompt_name=result['prompt_name'],
+                                system_prompt=result['system_prompt'],
+                                query=query_text,
+                                response=edited_step_response,
+                                mode="Chain",
+                                remark="Edited and saved",
+                                status=result['status'],
+                                status_code=result.get('status_code', 'N/A'),
+                                step=result['step'],
+                                input_query=result['input_query'],
+                                edited=True
+                            )
                             st.success("Step response updated!")
                             st.rerun()
                     with col_reverse:
                         if st.button(f"🔄 Reverse Prompt", key=f"reverse_chain_{j}"):
                             with st.spinner("Generating updated prompt..."):
+                                genai.configure(api_key=st.session_state.get('gemini_api_key'))  # Configure API key
                                 suggestion = suggest_func(edited_step_response, result['input_query'])
                                 st.session_state.prompts[j] = suggestion
                                 st.session_state.chain_results[j]['system_prompt'] = suggestion
                                 st.session_state.chain_results[j]['edited'] = True
                                 st.session_state.chain_results[j]['remark'] = 'Saved and ran'
+                                save_export_entry(
+                                    prompt_name=result['prompt_name'],
+                                    system_prompt=suggestion,
+                                    query=query_text,
+                                    response=edited_step_response,
+                                    mode="Chain",
+                                    remark="Reverse prompt generated",
+                                    status=result['status'],
+                                    status_code=result.get('status_code', 'N/A'),
+                                    step=result['step'],
+                                    input_query=result['input_query'],
+                                    edited=True
+                                )
                                 st.success("Prompt updated based on edited response!")
                                 st.rerun()
                 
                 if st.button(f"🔮 Suggest Prompt for This Response", key=f"suggest_chain_{j}"):
                     with st.spinner("Generating prompt suggestion..."):
+                        genai.configure(api_key=st.session_state.get('gemini_api_key'))  # Configure API key
                         suggestion = suggest_func(edited_step_response, result['input_query'])
                         st.write("**Suggested System Prompt:**")
                         suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_chain_{j}", disabled=True)
@@ -257,6 +356,16 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         'edited': False,
                                         'remark': 'Save only'
                                     })
+                                    save_export_entry(
+                                        prompt_name=prompt_name.strip(),
+                                        system_prompt=suggestion,
+                                        query=query_text,
+                                        response=None,
+                                        mode="Chain",
+                                        remark="Save only",
+                                        status="Not Executed",
+                                        status_code="N/A"
+                                    )
                                     st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                     st.rerun()
                                 else:
@@ -277,6 +386,16 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             'edited': False,
                                             'remark': 'Saved and ran'
                                         })
+                                        save_export_entry(
+                                            prompt_name=run_prompt_name.strip(),
+                                            system_prompt=suggestion,
+                                            query=query_text,
+                                            response=result['response'] if 'response' in result else None,
+                                            mode="Chain",
+                                            remark="Saved and ran",
+                                            status=result['status'],
+                                            status_code=result.get('status_code', 'N/A')
+                                        )
                                         st.session_state.test_results.append(result)
                                     st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
                                     st.rerun()
@@ -304,6 +423,16 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         'edited': False,
                                         'remark': 'Save only'
                                     })
+                                    save_export_entry(
+                                        prompt_name=prompt_name.strip(),
+                                        system_prompt=edited_suggestion,
+                                        query=query_text,
+                                        response=None,
+                                        mode="Chain",
+                                        remark="Save only",
+                                        status="Not Executed",
+                                        status_code="N/A"
+                                    )
                                     st.session_state[f"edit_suggest_chain_{j}_active"] = False
                                     st.success(f"Saved edited prompt as: {prompt_name.strip()}")
                                     st.rerun()
