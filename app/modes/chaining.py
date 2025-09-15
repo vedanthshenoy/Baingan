@@ -22,12 +22,25 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
     st.header("🔗 Prompt Chaining")
 
     # Initialize test_results with all required columns
+    required_columns = [
+        'unique_id', 'prompt_name', 'system_prompt', 'query', 'response',
+        'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited',
+        'step', 'input_query'
+    ]
     if 'test_results' not in st.session_state or not isinstance(st.session_state.test_results, pd.DataFrame):
-        st.session_state.test_results = pd.DataFrame(columns=[
-            'unique_id', 'prompt_name', 'system_prompt', 'query', 'response',
-            'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited',
-            'step', 'input_query'
-        ])
+        st.session_state.test_results = pd.DataFrame(columns=required_columns)
+    else:
+        # Ensure all required columns exist in test_results
+        for col in required_columns:
+            if col not in st.session_state.test_results.columns:
+                st.session_state.test_results[col] = None
+        # Convert 'rating' column to integer, replacing None with 0
+        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
+        # Remove incomplete rows (missing 'response' or 'status')
+        st.session_state.test_results = st.session_state.test_results[
+            st.session_state.test_results['response'].notnull() & 
+            st.session_state.test_results['status'].notnull()
+        ].reset_index(drop=True)
 
     # Initialize export_data if missing
     if 'export_data' not in st.session_state or not isinstance(st.session_state.export_data, pd.DataFrame):
@@ -94,9 +107,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
 
                 # Use Intermediate name for all except final
                 if i < total_steps - 1:
-                    display_name = f"Intermediate_Prompt_{i+1}"
+                    display_name = f"intermediate_response_after_{prompt_name}"
                 else:
-                    display_name = prompt_name
+                    display_name = "final_response"
 
                 # Unique id for row
                 unique_id = f"Chain_{display_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
@@ -110,7 +123,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     'status': result['status'],
                     'status_code': str(result.get('status_code', 'N/A')),
                     'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'rating': st.session_state.response_ratings.get(f"chain_{i}", 0),
+                    'rating': int(st.session_state.response_ratings.get(f"chain_{i}", 0)),
                     'remark': 'Saved and ran',
                     'edited': False,
                     'step': i + 1,
@@ -152,71 +165,53 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
         success_count = len(st.session_state.test_results[st.session_state.test_results['status'] == 'Success'])
         st.metric("Successful Chain Steps", f"{success_count}/{len(st.session_state.test_results)}")
 
-        # Filter final result, handling cases where 'step' might be NaN
-        if 'step' in st.session_state.test_results.columns and st.session_state.test_results['step'].notna().any():
-            final_result = st.session_state.test_results[
-                st.session_state.test_results['step'] == st.session_state.test_results['step'].max()
+        # Filter and display results
+        st.subheader("Filter Results")
+        filter_status = st.selectbox("Filter by Status", ["All", "Success", "Failed"], index=0)
+        filter_step = st.multiselect(
+            "Filter by Step",
+            options=sorted(st.session_state.test_results['prompt_name'].unique()),
+            default=sorted(st.session_state.test_results['prompt_name'].unique())
+        )
+
+        filtered_results = st.session_state.test_results
+        if filter_status != "All":
+            filtered_results = filtered_results[filtered_results['status'] == filter_status]
+        if filter_step:
+            filtered_results = filtered_results[filtered_results['prompt_name'].isin(filter_step)]
+
+        # Display results in a table
+        if not filtered_results.empty:
+            # Define columns to display, ensuring only available columns are used
+            display_columns = [
+                col for col in [
+                    'prompt_name', 'step', 'input_query', 'response', 'status',
+                    'status_code', 'timestamp', 'rating', 'remark'
+                ] if col in filtered_results.columns
             ]
-        else:
-            final_result = pd.DataFrame()  # Fallback if no valid step data
-
-        if not final_result.empty and final_result.iloc[0]['status'] == 'Success':
-            st.success("✅ Chain completed successfully!")
-            st.subheader("🎯 Final Result")
-
-            final_result = final_result.iloc[0]
-            edited_final = st.text_area(
-                "Final Output (editable):",
-                value=final_result['response'],
-                height=150,
-                key="edit_final_chain"
-            )
-
-            rating = st.slider(
-                "Rate this response (0-10):",
-                min_value=0,
-                max_value=10,
-                value=int(st.session_state.response_ratings.get("chain_final", 5)),
-                key="rating_chain_final"
-            )
-            st.session_state.response_ratings["chain_final"] = rating
-
-            if st.button("💾 Save Final Response"):
-                last_index = st.session_state.test_results.index[-1]
-                st.session_state.test_results.at[last_index, 'response'] = edited_final
-                st.session_state.test_results.at[last_index, 'edited'] = True
-
-                unique_id = save_export_entry(
-                    prompt_name=f"Chain_Final_{final_result['prompt_name']}",
-                    system_prompt=final_result['system_prompt'],
-                    query=query_text,
-                    response=edited_final,
-                    mode="Chain_Final",
-                    remark="Edited and saved",
-                    status=final_result['status'],
-                    status_code=final_result['status_code'],
-                    step=final_result['step'],
-                    input_query=final_result['input_query'],
-                    edited=True,
-                    rating=rating
+            try:
+                st.dataframe(
+                    filtered_results[display_columns].sort_values(by='step' if 'step' in display_columns else 'timestamp'),
+                    use_container_width=True
                 )
-                if unique_id:
-                    st.session_state.test_results.at[last_index, 'unique_id'] = unique_id
-                    st.session_state.test_results.at[last_index, 'remark'] = 'Edited and saved'
-                    # Update export_data with edited final result
-                    st.session_state.export_data = pd.concat([st.session_state.export_data,
-                                                             st.session_state.test_results.iloc[[last_index]]],
-                                                            ignore_index=True)
-                    st.success("Final response updated!")
 
-        st.subheader("📋 Step-by-Step Results")
-        for i, result in st.session_state.test_results.iterrows():
-            status_color = "🟢" if result['status'] == 'Success' else "🔴"
-            with st.expander(f"{status_color} Step {result.get('step', 'N/A')}: {result['prompt_name']} - {result['status']}"):
-                st.write("**System Prompt:**")
-                st.text(result['system_prompt'])
-                st.write("**Input Query:**")
-                st.text(result.get('input_query', 'N/A'))
-                st.write("**Response:**")
-                st.text(result['response'])
-                st.write(f"Status Code: {result['status_code']} | Time: {result['timestamp']}")
+                # Allow rating updates only for complete rows
+                for index, row in filtered_results.iterrows():
+                    if pd.notnull(row['response']) and pd.notnull(row['status']):
+                        rating_key = f"rating_{row['unique_id']}"
+                        current_rating = st.session_state.response_ratings.get(rating_key, row.get('rating', 0))
+                        # Ensure current_rating is an integer
+                        current_rating = int(current_rating) if current_rating is not None else 0
+                        new_rating = st.slider(
+                            f"Rate response for {row['prompt_name']} (Step {row.get('step', 'N/A')})",
+                            min_value=0, max_value=5, value=current_rating, key=rating_key
+                        )
+                        if new_rating != row.get('rating', 0):
+                            st.session_state.response_ratings[rating_key] = new_rating
+                            st.session_state.test_results.loc[index, 'rating'] = new_rating
+                            st.session_state.test_results.loc[index, 'edited'] = True
+            except KeyError as e:
+                st.error(f"Error displaying results: {e}. Some columns are missing. Showing available columns.")
+                st.dataframe(filtered_results, use_container_width=True)
+        else:
+            st.info("No results match the selected filters.")
