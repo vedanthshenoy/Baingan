@@ -101,12 +101,12 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                     with col_reverse:
                         if st.button(f"🔄 Reverse Prompt", key=f"reverse_{i}"):
                             with st.spinner("Generating updated prompt..."):
-                                genai.configure(api_key=st.session_state.get('gemini_api_key'))  # Configure API key
+                                genai.configure(api_key=st.session_state.get('gemini_api_key'))
                                 suggestion = suggest_func(edited_response, result['query'])
                                 st.session_state.prompts[i] = suggestion
                                 st.session_state.test_results[i]['system_prompt'] = suggestion
                                 st.session_state.test_results[i]['edited'] = True
-                                st.session_state.test_results[i]['remark'] = 'Saved and ran'
+                                st.session_state.test_results[i]['remark'] = 'Reverse prompt generated'
                                 save_export_entry(
                                     prompt_name=result['prompt_name'],
                                     system_prompt=suggestion,
@@ -123,7 +123,7 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                 
                 if st.button(f"🔮 Suggest Prompt for This Response", key=f"suggest_{i}"):
                     with st.spinner("Generating prompt suggestion..."):
-                        genai.configure(api_key=st.session_state.get('gemini_api_key'))  # Configure API key
+                        genai.configure(api_key=st.session_state.get('gemini_api_key'))
                         suggestion = suggest_func(edited_response, result['query'])
                         st.write("**Suggested System Prompt:**")
                         suggested_prompt = st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_{i}", disabled=True)
@@ -150,11 +150,11 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                                         prompt_name=prompt_name.strip(),
                                         system_prompt=suggestion,
                                         query=query_text,
-                                        response=None,
-                                        mode="Individual",
-                                        remark="Save only",
-                                        status="Not Executed",
-                                        status_code="N/A"
+                                        response='Prompt saved but not executed',
+                                        mode='Individual',
+                                        remark='Save only',
+                                        status='Not Executed',
+                                        status_code='N/A'
                                     )
                                     st.success(f"Saved as new prompt: {prompt_name.strip()}")
                                     st.rerun()
@@ -176,17 +176,17 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                                             'edited': False,
                                             'remark': 'Saved and ran'
                                         })
+                                        st.session_state.test_results.append(result)
                                         save_export_entry(
                                             prompt_name=run_prompt_name.strip(),
                                             system_prompt=suggestion,
                                             query=query_text,
                                             response=result['response'] if 'response' in result else None,
-                                            mode="Individual",
-                                            remark="Saved and ran",
+                                            mode='Individual',
+                                            remark='Saved and ran',
                                             status=result['status'],
                                             status_code=result.get('status_code', 'N/A')
                                         )
-                                        st.session_state.test_results.append(result)
                                     st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
                                     st.rerun()
                                 else:
@@ -217,11 +217,11 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                                         prompt_name=prompt_name.strip(),
                                         system_prompt=edited_suggestion,
                                         query=query_text,
-                                        response=None,
-                                        mode="Individual",
-                                        remark="Save only",
-                                        status="Not Executed",
-                                        status_code="N/A"
+                                        response='Prompt saved but not executed',
+                                        mode='Individual',
+                                        remark='Save only',
+                                        status='Not Executed',
+                                        status_code='N/A'
                                     )
                                     st.session_state[f"edit_suggest_{i}_active"] = False
                                     st.success(f"Saved edited prompt as: {prompt_name.strip()}")

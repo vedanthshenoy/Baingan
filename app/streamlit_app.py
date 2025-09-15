@@ -2,6 +2,8 @@ import streamlit as st
 import os
 from dotenv import load_dotenv
 import sys
+import uuid
+import pandas as pd
 
 # Ensure project root is in sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,13 +29,21 @@ st.set_page_config(
 defaults = {
     "prompts": [],
     "prompt_names": [],
-    "test_results": [],
+    "test_results": pd.DataFrame(columns=[
+        'prompt_name', 'system_prompt', 'query', 'response', 'status', 'status_code', 
+        'timestamp', 'rating', 'remark'
+    ]),
     "chain_results": [],
     "combination_results": [],
     "slider_weights": {},
     "last_selected_prompts": [],
     "response_ratings": {},
-    "export_data": [],
+    "export_data": pd.DataFrame(columns=[
+        'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
+        'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query', 
+        'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
+    ]),
+    "prompt_input_key_suffix": str(uuid.uuid4())  # Unique key for prompt input widgets
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -173,5 +183,10 @@ st.markdown("""
 📦 **Requirements:**
 ```bash
 pip install streamlit requests pandas openpyxl google-generativeai python-dotenv
+```
+🔑 **Environment Variables:**
+Create a `.env` file with:
+```
 GEMINI_API_KEY=your_gemini_api_key_here
+```
 """)
