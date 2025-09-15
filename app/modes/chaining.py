@@ -33,6 +33,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
         for col in required_columns:
             if col not in st.session_state.test_results.columns:
                 st.session_state.test_results[col] = None
+        # keep rating column consistent
         st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
         st.session_state.test_results = st.session_state.test_results[
             st.session_state.test_results['response'].notnull() &
@@ -51,21 +52,59 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
     if 'response_ratings' not in st.session_state:
         st.session_state.response_ratings = {}
 
-    # Helper to normalize unique_id after save_export_entry (handles fallback)
-    def _normalize_saved_uid(maybe_uid, export_row_dict):
+    # Helper: ensure export_data has an entry for uid, return the uid to use.
+    def _normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=None):
+        """
+        Return a stable uid to use for both test_results and export_data.
+        - If maybe_uid (returned by save_export_entry) is provided, use it.
+        - Otherwise use generated_uid (if provided) or create a new one.
+        Ensure export_data contains a row for uid, and register response_ratings[uid].
+        """
         if isinstance(maybe_uid, str) and maybe_uid:
             uid = maybe_uid
         else:
-            uid = f"Chain_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4()}"
-            if 'export_data' in st.session_state:
-                row = export_row_dict.copy()
-                row['unique_id'] = uid
-                st.session_state.export_data = pd.concat([st.session_state.export_data, pd.DataFrame([row])], ignore_index=True)
+            uid = generated_uid or f"Chain_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4()}"
 
+        # Ensure st.session_state.export_data contains a row with uid (append if missing)
+        try:
+            exists = ('export_data' in st.session_state and
+                      uid in st.session_state.export_data.get('unique_id', pd.Series(dtype="object")).values)
+        except Exception:
+            exists = False
+
+        if not exists:
+            # create a row based on export_row_dict, but make sure column names match export_data
+            row = export_row_dict.copy()
+            row['unique_id'] = uid
+            # ensure required columns exist in row
+            if 'timestamp' not in row:
+                row['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # append missing columns with None if needed to match export_data
+            for col in st.session_state.export_data.columns:
+                if col not in row:
+                    row[col] = None
+            st.session_state.export_data = pd.concat([st.session_state.export_data, pd.DataFrame([row])], ignore_index=True)
+
+        # Ensure a response rating entry exists (transfer from generated uid if present)
         if uid not in st.session_state.response_ratings:
-            st.session_state.response_ratings[uid] = export_row_dict.get('rating', 0) or 0
+            # transfer
+            if generated_uid and generated_uid in st.session_state.response_ratings:
+                st.session_state.response_ratings[uid] = st.session_state.response_ratings.pop(generated_uid)
+            else:
+                st.session_state.response_ratings[uid] = export_row_dict.get('rating', 0) or 0
 
         return uid
+
+    # Normalize 'step' dtype helper to avoid pyarrow conversion warnings
+    def _normalize_step_dtype():
+        if 'step' in st.session_state.test_results.columns:
+            st.session_state.test_results['step'] = pd.to_numeric(
+                st.session_state.test_results['step'], errors='coerce'
+            ).astype('Int64')
+        if 'step' in st.session_state.export_data.columns:
+            st.session_state.export_data['step'] = pd.to_numeric(
+                st.session_state.export_data['step'], errors='coerce'
+            ).astype('Int64')
 
     # Show chain setup
     if st.session_state.get('prompts', []):
@@ -101,6 +140,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             progress_bar = st.progress(0)
             status_text = st.empty()
 
+            # Remove earlier 'Saved and ran' results to avoid duplicates when re-running
             st.session_state.test_results = st.session_state.test_results[
                 ~st.session_state.test_results['remark'].str.contains("Saved and ran", na=False)
             ].reset_index(drop=True)
@@ -111,6 +151,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             for i, (system_prompt, prompt_name) in enumerate(zip(st.session_state.prompts, st.session_state.prompt_names)):
                 status_text.text(f"Executing step {i+1}: {prompt_name}...")
 
+                # New chaining logic: combine prompt + previous response
                 if i == 0:
                     step_input_query = current_query
                 else:
@@ -125,7 +166,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     display_name = "final_response"
                     mode = "Chain_Final"
 
+                # generate a temporary uid for the row; may be replaced by save_export_entry's uid
                 generated_uid = f"Chain_{display_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                # ensure a rating entry for this temporary uid so slider behaves immediately
                 st.session_state.response_ratings[generated_uid] = 0
 
                 new_result = pd.DataFrame([{
@@ -143,8 +186,13 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     'step': i + 1,
                     'input_query': step_input_query
                 }])
+                # append to test_results
                 st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
 
+                # remember appended row index (last one)
+                appended_index = st.session_state.test_results.index[-1]
+
+                # Build export_row for saving
                 export_row_dict = {
                     'prompt_name': display_name,
                     'system_prompt': system_prompt,
@@ -156,15 +204,42 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     'status_code': result.get('status_code', 'N/A'),
                     'step': i + 1,
                     'input_query': step_input_query,
-                    'rating': 0
+                    'rating': 0,
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
-                maybe_uid = save_export_entry(**export_row_dict)
-                _normalize_saved_uid(maybe_uid, export_row_dict)
+
+                # try to save and normalize uid
+                try:
+                    maybe_uid = save_export_entry(**export_row_dict)
+                except Exception:
+                    maybe_uid = None
+
+                saved_uid = _normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
+
+                # If saved_uid differs from the generated uid, transfer rating mapping and update test_results
+                if saved_uid != generated_uid:
+                    # transfer rating (if any)
+                    val = st.session_state.response_ratings.pop(generated_uid, 0)
+                    st.session_state.response_ratings[saved_uid] = val
+                    # update the test_results row to use saved_uid
+                    st.session_state.test_results.at[appended_index, 'unique_id'] = saved_uid
+                    st.session_state.test_results.at[appended_index, 'rating'] = val
+                else:
+                    # ensure export_data row rating is set (best-effort)
+                    try:
+                        st.session_state.export_data.loc[
+                            st.session_state.export_data['unique_id'] == saved_uid, 'rating'
+                        ] = st.session_state.response_ratings.get(saved_uid, 0)
+                    except Exception:
+                        pass
+
+                # normalise step dtype to avoid arrow warnings
+                _normalize_step_dtype()
 
                 if result['status'] == 'Success':
                     current_query = result['response']
                 else:
-                    st.warning(f"Step {i+1} failed: {result['response']}. Continuing with previous query...")
+                    st.warning(f"Step {i+1} failed: {result.get('response', 'No response')}. Continuing with previous query...")
 
                 progress_bar.progress((i + 1) / total_steps)
 
@@ -197,16 +272,27 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                 rating_key = f"rating_{unique_id}"
                 current_rating = st.session_state.response_ratings.get(unique_id, int(row.get('rating', 0) or 0))
                 new_rating = st.slider(
-                    "Rate this response (0-10):",
+                    f"Rate response for {row['prompt_name']} (Step {row.get('step', 'N/A')})",
                     min_value=0, max_value=10,
                     value=int(current_rating),
                     key=rating_key
                 )
 
+                # Write rating to both dataframes immediately
                 if new_rating != (row.get('rating', 0) or 0):
                     st.session_state.response_ratings[unique_id] = new_rating
-                    st.session_state.test_results.at[i, 'rating'] = new_rating
-                    st.session_state.test_results.at[i, 'edited'] = True
+                    # update test_results safe by index
+                    try:
+                        st.session_state.test_results.at[i, 'rating'] = new_rating
+                        st.session_state.test_results.at[i, 'edited'] = True
+                    except Exception:
+                        # fallback: locate row by unique_id
+                        idxs = st.session_state.test_results.index[st.session_state.test_results['unique_id'] == unique_id].tolist()
+                        if idxs:
+                            st.session_state.test_results.at[idxs[0], 'rating'] = new_rating
+                            st.session_state.test_results.at[idxs[0], 'edited'] = True
+
+                    # update export_data by unique_id
                     if 'export_data' in st.session_state and not st.session_state.export_data.empty:
                         st.session_state.export_data.loc[
                             st.session_state.export_data['unique_id'] == unique_id, 'rating'
@@ -214,6 +300,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         st.session_state.export_data.loc[
                             st.session_state.export_data['unique_id'] == unique_id, 'edited'
                         ] = True
+
                     st.rerun()
 
                 # Save / Reverse buttons for edited response
@@ -230,16 +317,18 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                             status=row['status'],
                             status_code=row.get('status_code', 'N/A'),
                             edited=True,
-                            rating=new_rating
+                            rating=st.session_state.response_ratings.get(unique_id, 0)
                         )
                         final_uid = _normalize_saved_uid(saved_uid, {
                             'prompt_name': row['prompt_name'],
                             'system_prompt': row['system_prompt'],
                             'query': row['query'],
                             'response': edited_response,
-                            'rating': new_rating
-                        })
-                        st.session_state.response_ratings[final_uid] = new_rating
+                            'rating': st.session_state.response_ratings.get(unique_id, 0),
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        }, generated_uid=unique_id)
+                        # ensure rating mapping uses final uid
+                        st.session_state.response_ratings[final_uid] = st.session_state.response_ratings.pop(unique_id, 0)
                         st.session_state.test_results.at[i, 'unique_id'] = final_uid
                         st.session_state.test_results.at[i, 'response'] = edited_response
                         st.session_state.test_results.at[i, 'remark'] = 'Edited and saved'
@@ -254,6 +343,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                             st.session_state.test_results.at[i, 'system_prompt'] = suggestion
                             st.session_state.test_results.at[i, 'edited'] = True
                             st.session_state.test_results.at[i, 'remark'] = 'Reverse prompt generated'
+
                             saved_uid = save_export_entry(
                                 prompt_name=row['prompt_name'],
                                 system_prompt=suggestion,
@@ -264,16 +354,17 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                 status=row['status'],
                                 status_code=row.get('status_code', 'N/A'),
                                 edited=True,
-                                rating=new_rating
+                                rating=st.session_state.response_ratings.get(unique_id, 0)
                             )
                             final_uid = _normalize_saved_uid(saved_uid, {
                                 'prompt_name': row['prompt_name'],
                                 'system_prompt': suggestion,
                                 'query': row['query'],
                                 'response': edited_response,
-                                'rating': new_rating
-                            })
-                            st.session_state.response_ratings[final_uid] = new_rating
+                                'rating': st.session_state.response_ratings.get(unique_id, 0),
+                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            }, generated_uid=unique_id)
+                            st.session_state.response_ratings[final_uid] = st.session_state.response_ratings.pop(unique_id, 0)
                             st.session_state.test_results.at[i, 'unique_id'] = final_uid
                             st.success("Prompt updated based on edited response!")
                             st.rerun()
@@ -315,9 +406,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     'system_prompt': st.session_state[f"suggested_prompt_{i}"],
                                     'query': row['query'],
                                     'response': 'Prompt saved but not executed',
-                                    'rating': 0
+                                    'rating': 0,
+                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 }
-                                saved_uid = _normalize_saved_uid(maybe_uid, export_row)
+                                saved_uid = _normalize_saved_uid(maybe_uid, export_row, generated_uid=None)
                                 st.session_state.response_ratings[saved_uid] = 0
                                 st.session_state.prompts.append(st.session_state[f"suggested_prompt_{i}"])
                                 st.session_state.prompt_names.append(prompt_name.strip())
@@ -337,6 +429,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     'input_query': row.get('input_query', row['query'])
                                 }])
                                 st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
+                                _normalize_step_dtype()
                                 del st.session_state[f"suggested_prompt_{i}"]
                                 del st.session_state[f"suggested_prompt_name_{i}"]
                                 st.success(f"Saved as new prompt: {prompt_name.strip()}")
@@ -371,9 +464,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         'system_prompt': st.session_state[f"suggested_prompt_{i}"],
                                         'query': row.get('input_query', row['query']),
                                         'response': run_result['response'] if 'response' in run_result else None,
-                                        'rating': 0
+                                        'rating': 0,
+                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                     }
-                                    saved_uid = _normalize_saved_uid(maybe_uid, export_row)
+                                    saved_uid = _normalize_saved_uid(maybe_uid, export_row, generated_uid=None)
                                     st.session_state.response_ratings[saved_uid] = 0
                                     new_result = pd.DataFrame([{
                                         'unique_id': saved_uid,
@@ -391,6 +485,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         'input_query': row.get('input_query', row['query'])
                                     }])
                                     st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
+                                    _normalize_step_dtype()
                                 del st.session_state[f"suggested_prompt_{i}"]
                                 del st.session_state[f"suggested_prompt_name_{i}"]
                                 st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
@@ -430,9 +525,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         'system_prompt': edited_suggestion,
                                         'query': row.get('input_query', row['query']),
                                         'response': 'Prompt saved but not executed',
-                                        'rating': 0
+                                        'rating': 0,
+                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                     }
-                                    saved_uid = _normalize_saved_uid(maybe_uid, export_row)
+                                    saved_uid = _normalize_saved_uid(maybe_uid, export_row, generated_uid=None)
                                     st.session_state.response_ratings[saved_uid] = 0
                                     st.session_state.prompts.append(edited_suggestion)
                                     st.session_state.prompt_names.append(edit_prompt_name.strip())
@@ -452,6 +548,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         'input_query': row.get('input_query', row['query'])
                                     }])
                                     st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
+                                    _normalize_step_dtype()
                                     st.session_state[f"edit_suggest_chain_{i}_active"] = False
                                     del st.session_state[f"suggested_prompt_{i}"]
                                     del st.session_state[f"suggested_prompt_name_{i}"]
