@@ -4,7 +4,23 @@ import io
 import uuid
 from datetime import datetime
 
-def save_export_entry(prompt_name, system_prompt, query, response, mode, remark, status, status_code, combination_strategy=None, combination_temperature=None, slider_weights=None, edited=False, step=None, input_query=None):
+def save_export_entry(
+    prompt_name,
+    system_prompt,
+    query,
+    response,
+    mode,
+    remark,
+    status,
+    status_code,
+    combination_strategy=None,
+    combination_temperature=None,
+    slider_weights=None,
+    edited=False,
+    step=None,
+    input_query=None,
+    rating=0
+):
     if 'export_data' not in st.session_state:
         st.session_state.export_data = pd.DataFrame(columns=[
             'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
@@ -31,7 +47,7 @@ def save_export_entry(prompt_name, system_prompt, query, response, mode, remark,
         'combination_strategy': combination_strategy if combination_strategy is not None else '',
         'combination_temperature': combination_temperature if combination_temperature is not None else '',
         'slider_weights': str(slider_weights) if slider_weights is not None else '',
-        'rating': st.session_state.response_ratings.get(f"{mode}_{prompt_name}", 0),
+        'rating': rating,
         'remark': remark
     }])
     
@@ -80,8 +96,8 @@ def render_export_section(query_text):
             'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
         ])
         st.session_state.test_results = pd.DataFrame(columns=[
-            'prompt_name', 'system_prompt', 'query', 'response', 'status', 'status_code', 
-            'timestamp', 'rating', 'remark'
+            'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 
+            'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
         ])
         st.session_state.chain_results = []
         st.session_state.combination_results = {}
