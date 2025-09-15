@@ -108,8 +108,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                 # Use Intermediate name for all except final
                 if i < total_steps - 1:
                     display_name = f"intermediate_response_after_{prompt_name}"
+                    mode = "Chain_Intermediate"
                 else:
                     display_name = "final_response"
+                    mode = "Chain_Final"
 
                 # Unique id for row
                 unique_id = f"Chain_{display_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
@@ -133,21 +135,20 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                 # Save all steps into test_results
                 st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
 
-                # Save ONLY final step into export_data
-                if i == total_steps - 1:
-                    save_export_entry(
-                        prompt_name=f"Chain_Final_{display_name}",
-                        system_prompt=system_prompt,
-                        query=query_text,
-                        response=result['response'] if 'response' in result else None,
-                        mode="Chain_Final",
-                        remark="Final chained result",
-                        status=result['status'],
-                        status_code=result.get('status_code', 'N/A'),
-                        step=i + 1,
-                        input_query=current_query
-                    )
-                    st.session_state.export_data = pd.concat([st.session_state.export_data, new_result], ignore_index=True)
+                # Save all steps into export_data via save_export_entry
+                save_export_entry(
+                    prompt_name=display_name,
+                    system_prompt=system_prompt,
+                    query=query_text,
+                    response=result['response'] if 'response' in result else None,
+                    mode=mode,
+                    remark=f"{'Intermediate' if i < total_steps - 1 else 'Final'} chained result",
+                    status=result['status'],
+                    status_code=result.get('status_code', 'N/A'),
+                    step=i + 1,
+                    input_query=current_query,
+                    rating=int(st.session_state.response_ratings.get(f"chain_{i}", 0))
+                )
 
                 if result['status'] == 'Success':
                     current_query = result['response']
