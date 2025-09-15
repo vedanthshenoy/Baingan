@@ -1,82 +1,85 @@
 import streamlit as st
+import pandas as pd
 import uuid
+from datetime import datetime
+
 
 def ensure_prompt_names():
+    """Ensure prompts always have names"""
     while len(st.session_state.prompt_names) < len(st.session_state.prompts):
         st.session_state.prompt_names.append(f"Prompt {len(st.session_state.prompt_names) + 1}")
-    while len(st.session_state.prompt_names) > len(st.session_state.prompts):
-        st.session_state.prompt_names.pop()
+
+
+def remove_prompt(index):
+    """Callback function to remove a prompt by index"""
+    if index < len(st.session_state.prompts):
+        st.session_state.prompts.pop(index)
+        st.session_state.prompt_names.pop(index)
+
+
+def add_new_prompt():
+    """Callback function to add a new prompt and clear the input field"""
+    new_prompt = st.session_state.new_prompt_input
+    if new_prompt.strip():
+        st.session_state.prompts.append(new_prompt)
+        st.session_state.prompt_names.append(f"Prompt {len(st.session_state.prompts)}")
+        # Clear the text area by setting its session state value to an empty string
+        st.session_state.new_prompt_input = ""
+
 
 def add_prompt_section():
-    st.subheader("✏️ Prompt Management")
-    
-    if 'prompt_input_key_suffix' not in st.session_state:
-        st.session_state.prompt_input_key_suffix = str(uuid.uuid4())
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        new_prompt = st.text_area("Enter your system prompt:", height=100, key=f"new_prompt_input_{st.session_state.prompt_input_key_suffix}")
-    with col2:
-        st.write("")  # spacing
-        new_prompt_name = st.text_input("Prompt Name:", placeholder=f"Prompt {len(st.session_state.prompts) + 1}", key=f"new_prompt_name_{st.session_state.prompt_input_key_suffix}")
-    
-    col_add, col_clear = st.columns(2)
-    with col_add:
-        if st.button("➕ Add System Prompt", type="primary", key="add_prompt"):
-            if new_prompt.strip():
-                st.session_state.prompts.append(new_prompt.strip())
-                prompt_name = new_prompt_name.strip() if new_prompt_name.strip() else f"Prompt {len(st.session_state.prompts)}"
-                st.session_state.prompt_names.append(prompt_name)
-                st.session_state.prompt_input_key_suffix = str(uuid.uuid4())
-                st.success(f"Added: {prompt_name}")
-                st.rerun()
-            else:
-                st.error("Please enter a prompt")
-    
-    with col_clear:
-        if st.button("🗑️ Clear All Prompts", key="clear_prompts"):
-            st.session_state.prompts = []
-            st.session_state.prompt_names = []
-            st.session_state.test_results = []
-            st.session_state.chain_results = []
-            st.session_state.combination_results = []
-            st.session_state.slider_weights = {}
-            st.session_state.last_selected_prompts = []
-            st.session_state.response_ratings = {}
-            st.session_state.prompt_input_key_suffix = str(uuid.uuid4())
-            st.success("Cleared all prompts and results")
-            st.rerun()
-    
-    if st.session_state.prompts:
+    st.subheader("📜 Prompt Management")
+
+    # --- Add new prompt section first ---
+    # The key is used to store the text area's value in st.session_state
+    st.text_area("➕ Add New Prompt", key="new_prompt_input")
+    # The on_click callback is used to run the add_new_prompt function
+    st.button("Add Prompt", key="add_prompt_btn", on_click=add_new_prompt)
+
+    st.markdown("---")
+
+    # --- Existing prompts section below ---
+    if "prompts" in st.session_state and st.session_state.prompts:
+        st.subheader("📝 Edit Saved Prompts")
         ensure_prompt_names()
-        st.subheader(f"📋 Current Prompts ({len(st.session_state.prompts)})")
-        
-        for i in range(len(st.session_state.prompts)):
-            with st.expander(f"{st.session_state.prompt_names[i]}: {st.session_state.prompts[i][:50]}..."):
-                new_name = st.text_input("Name:", value=st.session_state.prompt_names[i], key=f"edit_name_{i}")
-                if new_name != st.session_state.prompt_names[i]:
-                    if st.button(f"💾 Update Name", key=f"update_name_{i}"):
-                        st.session_state.prompt_names[i] = new_name
-                        st.success(f"Updated name to: {new_name}")
-                        st.rerun()
-                
-                edited_prompt = st.text_area("Content:", value=st.session_state.prompts[i], height=100, key=f"edit_prompt_{i}")
-                if edited_prompt != st.session_state.prompts[i]:
-                    if st.button(f"💾 Update Content", key=f"update_content_{i}"):
-                        st.session_state.prompts[i] = edited_prompt
-                        st.success("Updated prompt content")
-                        st.rerun()
-                
-                if st.button(f"🗑️ Remove", key=f"remove_{i}"):
-                    st.session_state.prompts.pop(i)
-                    st.session_state.prompt_names.pop(i)
-                    if i < len(st.session_state.test_results):
-                        st.session_state.test_results.pop(i)
-                    if i < len(st.session_state.chain_results):
-                        st.session_state.chain_results.pop(i)
-                    if i in st.session_state.slider_weights:
-                        del st.session_state.slider_weights[i]
-                    for key in list(st.session_state.response_ratings.keys()):
-                        if key.startswith(f"test_{i}_") or key.startswith(f"chain_{i}_") or key.startswith(f"combination_individual_{i}_"):
-                            del st.session_state.response_ratings[key]
-                    st.rerun()
+
+        for i, prompt in enumerate(st.session_state.prompts):
+            with st.expander(f"Prompt {i+1}: {st.session_state.prompt_names[i]}", expanded=True):
+                st.text_input(
+                    f"Prompt {i+1} Name",
+                    value=st.session_state.prompt_names[i],
+                    key=f"prompt_name_{i}"
+                )
+
+                # Inline edit
+                edited_text = st.text_area(
+                    f"Edit Prompt {i+1}",
+                    value=prompt,
+                    key=f"prompt_edit_{i}"
+                )
+
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    if st.button("💾 Save", key=f"save_btn_{i}"):
+                        st.session_state.prompts[i] = edited_text
+                with col2:
+                    st.button(
+                        "🗑️ Remove",
+                        key=f"remove_btn_{i}",
+                        on_click=remove_prompt,
+                        args=[i]
+                    )
+
+    st.markdown("---")
+
+
+if "prompts" not in st.session_state:
+    st.session_state.prompts = []
+if "prompt_names" not in st.session_state:
+    st.session_state.prompt_names = []
+if "test_results" not in st.session_state:
+    st.session_state.test_results = pd.DataFrame(columns=[
+        "unique_id", "prompt_name", "system_prompt", "query", "response", "status", "status_code", "timestamp", "rating", "remark", "edited"
+    ])
+
+add_prompt_section()
