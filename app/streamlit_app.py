@@ -25,16 +25,16 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialize session state defaults
+# Initialize session state defaults with consistent columns
 defaults = {
     "prompts": [],
     "prompt_names": [],
     "test_results": pd.DataFrame(columns=[
-        'prompt_name', 'system_prompt', 'query', 'response', 'status', 'status_code', 
-        'timestamp', 'rating', 'remark'
+        'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 'status', 'status_code', 
+        'timestamp', 'rating', 'remark', 'edited'
     ]),
     "chain_results": [],
-    "combination_results": [],
+    "combination_results": {},
     "slider_weights": {},
     "last_selected_prompts": [],
     "response_ratings": {},
