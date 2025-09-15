@@ -30,13 +30,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
     if 'test_results' not in st.session_state or not isinstance(st.session_state.test_results, pd.DataFrame):
         st.session_state.test_results = pd.DataFrame(columns=required_columns)
     else:
-        # Ensure all required columns exist in test_results
         for col in required_columns:
             if col not in st.session_state.test_results.columns:
                 st.session_state.test_results[col] = None
-        # Convert 'rating' column to integer, replacing None with 0
         st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
-        # Remove incomplete rows (missing 'response' or 'status')
         st.session_state.test_results = st.session_state.test_results[
             st.session_state.test_results['response'].notnull() & 
             st.session_state.test_results['status'].notnull()
@@ -54,7 +51,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
     if 'response_ratings' not in st.session_state:
         st.session_state.response_ratings = {}
 
-    # Show chain setup (reorder only, no prompts table)
+    # Show chain setup
     if st.session_state.get('prompts', []):
         ensure_prompt_names()
         if len(st.session_state.prompts) > 1:
@@ -99,7 +96,15 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             for i, (system_prompt, prompt_name) in enumerate(zip(st.session_state.prompts, st.session_state.prompt_names)):
                 status_text.text(f"Executing step {i+1}: {prompt_name}...")
 
-                result = call_api_func(system_prompt, current_query, body_template, headers, response_path)
+                # 🔑 New chaining logic:
+                # For step 1: just use query_text
+                # For later steps: prepend the new prompt to the previous response
+                if i == 0:
+                    step_input_query = current_query
+                else:
+                    step_input_query = f"{system_prompt}\n\n{current_query}"
+
+                result = call_api_func(system_prompt, step_input_query, body_template, headers, response_path)
 
                 # Use Intermediate name for all except final
                 if i < total_steps - 1:
@@ -128,7 +133,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     'remark': 'Saved and ran',
                     'edited': False,
                     'step': i + 1,
-                    'input_query': current_query
+                    'input_query': step_input_query
                 }])
 
                 # Save all steps into test_results
@@ -145,7 +150,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     status=result['status'],
                     status_code=result.get('status_code', 'N/A'),
                     step=i + 1,
-                    input_query=current_query,
+                    input_query=step_input_query,
                     rating=0
                 )
 
@@ -194,10 +199,8 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                 )
                 if new_rating != row.get('rating', 0):
                     st.session_state.response_ratings[unique_id] = new_rating
-                    # Update rating in test_results
                     st.session_state.test_results.loc[index, 'rating'] = new_rating
                     st.session_state.test_results.loc[index, 'edited'] = True
-                    # Update rating in export_data for matching unique_id
                     if 'export_data' in st.session_state and not st.session_state.export_data.empty:
                         st.session_state.export_data.loc[
                             st.session_state.export_data['unique_id'] == unique_id, 'rating'
