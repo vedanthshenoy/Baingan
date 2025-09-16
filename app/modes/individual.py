@@ -72,10 +72,12 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
             status_text.text("Testing completed!")
             st.success(f"Tested {len(st.session_state.prompts)} prompts!")
 
-    # 🔑 FIX: Filter out pending results before displaying
+    # ✅ FIX: Filter out pending/incomplete results before displaying
     if not st.session_state.test_results.empty:
-        # Filter for rows where the 'response' is not None
-        completed_results = st.session_state.test_results[pd.notnull(st.session_state.test_results['response'])]
+        # Filter for rows where the 'response' column is not None or empty
+        completed_results = st.session_state.test_results[
+            st.session_state.test_results['response'].notna() & (st.session_state.test_results['response'] != "")
+        ]
         if not completed_results.empty:
             st.subheader("📊 Test Results")
             success_count = sum(1 for _, row in completed_results.iterrows() if row['status'] == 'Success')
