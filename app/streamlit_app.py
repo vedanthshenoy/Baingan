@@ -179,15 +179,3 @@ st.markdown("""
 - **📊 Comprehensive Export:** All results including individual, chain, and combination data with ratings and remarks  
 - **💾 Response Editing:** Edit and save responses, with reverse prompt engineering  
 """)
-
-st.markdown("""
-📦 **Requirements:**
-```bash
-pip install streamlit requests pandas openpyxl google-generativeai python-dotenv
-```
-🔑 **Environment Variables:**
-Create a `.env` file with:
-```
-GEMINI_API_KEY=your_gemini_api_key_here
-```
-""")
