@@ -221,7 +221,7 @@ Return only the combined system prompt without additional explanation.
                         status=result['status'],
                         status_code=result.get('status_code', 'N/A'),
                         combination_strategy=st.session_state.combination_results.get('strategy'),
-                        combination_temperature=st.session_state.combination_results.get('temperature'),
+                        combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
                         slider_weights=st.session_state.combination_results.get('slider_weights'),
                         rating=0
                     )
@@ -254,7 +254,7 @@ Return only the combined system prompt without additional explanation.
                     status=combined_result['status'],
                     status_code=combined_result.get('status_code', 'N/A'),
                     combination_strategy=st.session_state.combination_results.get('strategy'),
-                    combination_temperature=st.session_state.combination_results.get('temperature'),
+                    combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
                     slider_weights=st.session_state.combination_results.get('slider_weights'),
                     rating=0
                 )
@@ -462,7 +462,7 @@ Return only the combined system prompt without additional explanation.
                                             status='Not Executed',
                                             status_code='N/A',
                                             combination_strategy=st.session_state.combination_results.get('strategy'),
-                                            combination_temperature=st.session_state.combination_results.get('temperature'),
+                                            combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
                                             slider_weights=st.session_state.combination_results.get('slider_weights'),
                                             rating=0
                                         )
@@ -505,7 +505,7 @@ Return only the combined system prompt without additional explanation.
                                                 status=result['status'],
                                                 status_code=result.get('status_code', 'N/A'),
                                                 combination_strategy=st.session_state.combination_results.get('strategy'),
-                                                combination_temperature=st.session_state.combination_results.get('temperature'),
+                                                combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
                                                 slider_weights=st.session_state.combination_results.get('slider_weights'),
                                                 rating=0
                                             )
@@ -551,7 +551,7 @@ Return only the combined system prompt without additional explanation.
                                                 status='Not Executed',
                                                 status_code='N/A',
                                                 combination_strategy=st.session_state.combination_results.get('strategy'),
-                                                combination_temperature=st.session_state.combination_results.get('temperature'),
+                                                combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
                                                 slider_weights=st.session_state.combination_results.get('slider_weights'),
                                                 rating=0
                                             )
@@ -715,7 +715,7 @@ Return only the combined system prompt without additional explanation.
                                     status='Not Executed',
                                     status_code='N/A',
                                     combination_strategy=st.session_state.combination_results.get('strategy'),
-                                    combination_temperature=st.session_state.combination_results.get('temperature'),
+                                    combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
                                     slider_weights=st.session_state.combination_results.get('slider_weights'),
                                     rating=0
                                 )
@@ -758,7 +758,7 @@ Return only the combined system prompt without additional explanation.
                                         status=result['status'],
                                         status_code=result.get('status_code', 'N/A'),
                                         combination_strategy=st.session_state.combination_results.get('strategy'),
-                                        combination_temperature=st.session_state.combination_results.get('temperature'),
+                                        combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
                                         slider_weights=st.session_state.combination_results.get('slider_weights'),
                                         rating=0
                                     )
@@ -804,7 +804,7 @@ Return only the combined system prompt without additional explanation.
                                         status='Not Executed',
                                         status_code='N/A',
                                         combination_strategy=st.session_state.combination_results.get('strategy'),
-                                        combination_temperature=st.session_state.combination_results.get('temperature'),
+                                        combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
                                         slider_weights=st.session_state.combination_results.get('slider_weights'),
                                         rating=0
                                     )
