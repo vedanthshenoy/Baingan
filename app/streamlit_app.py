@@ -118,30 +118,31 @@ query_text = st.sidebar.text_area(
     height=100
 )
 
-# Sidebar: Body template
-st.sidebar.subheader("Request Body Template")
-body_template = st.sidebar.text_area(
-    "JSON Template (use {system_prompt} and {query} as placeholders)",
-    value="""{
-  "query": "{system_prompt}\\n\\nQuestion: {query}\\nAnswer:",
-  "top_k": 5
-}""",
-    height=150,
-    help="Use {system_prompt} for the system instructions and {query} for the user query"
+# Sidebar: Test mode selection
+test_mode = st.sidebar.selectbox(
+    "🎯 Test Mode",
+    ["Individual Testing", "Prompt Chaining", "Prompt Combination"],
+    help="Choose how to test your prompts"
 )
+
+# Sidebar: Request body template section
+with st.sidebar.expander("Request Body Template", expanded=False):
+    st.markdown("Enable this section to customize the JSON template for your API requests.")
+    body_template = st.text_area(
+        "JSON Template (use {system_prompt} and {query} as placeholders)",
+        value="""{
+"query": "{system_prompt}\\n\\nQuestion: {query}\\nAnswer:",
+"top_k": 5
+}""",
+        height=150,
+        help="Use {system_prompt} for the system instructions and {query} for the user query"
+    )
 
 # Sidebar: Response path
 response_path = st.sidebar.text_input(
     "Response Text Path",
     value="response",
     help="JSON path to extract response text (e.g., 'response' or 'data.message')"
-)
-
-# Sidebar: Test mode selection
-test_mode = st.sidebar.selectbox(
-    "🎯 Test Mode",
-    ["Individual Testing", "Prompt Chaining", "Prompt Combination"],
-    help="Choose how to test your prompts"
 )
 
 st.markdown("---")
