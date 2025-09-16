@@ -6,7 +6,6 @@ from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
 from app.export import save_export_entry
 
-
 def render_prompt_combination(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func, gemini_api_key):
     st.header("🤝 Prompt Combination")
     
@@ -363,11 +362,42 @@ Return only the combined system prompt without additional explanation.
                             key=rating_key
                         )
 
-                        # Fix: Update the dataframe with the new rating
                         if new_rating != current_rating:
                             st.session_state.response_ratings[unique_id] = new_rating
-                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = new_rating
-                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                            
+                            saved_unique_id = save_export_entry(
+                                prompt_name=result['prompt_name'],
+                                system_prompt=result['system_prompt'],
+                                query=query_text,
+                                response=result['response'],
+                                mode="Combination_Individual",
+                                remark="Rating updated",
+                                status=result['status'],
+                                status_code=result.get('status_code', 'N/A'),
+                                combination_strategy=st.session_state.combination_results.get('strategy'),
+                                combination_temperature=st.session_state.combination_results.get('temperature'),
+                                slider_weights=st.session_state.combination_results.get('slider_weights'),
+                                edited=True,
+                                rating=new_rating
+                            )
+                            st.session_state.combination_results['individual_results'][j]['unique_id'] = saved_unique_id
+                            st.session_state.combination_results['individual_results'][j]['rating'] = new_rating
+                            st.session_state.combination_results['individual_results'][j]['edited'] = True
+                            
+                            new_df_row = pd.DataFrame([{
+                                'unique_id': saved_unique_id,
+                                'prompt_name': result['prompt_name'],
+                                'system_prompt': result['system_prompt'],
+                                'query': query_text,
+                                'response': result['response'],
+                                'status': result['status'],
+                                'status_code': str(result.get('status_code', 'N/A')),
+                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                'edited': True,
+                                'remark': 'Rating updated',
+                                'rating': new_rating
+                            }])
+                            st.session_state.test_results = pd.concat([st.session_state.test_results, new_df_row], ignore_index=True)
                             st.rerun()
 
                         if edited_individual_response != result['response']:
@@ -586,7 +616,6 @@ Return only the combined system prompt without additional explanation.
                 st.subheader("🤝 Combined Prompt Result")
                 combined_result = st.session_state.combination_results['combined_result']
                 
-                # Check for completed test and display
                 if combined_result and combined_result.get('response'):
                     status_color = "🟢" if combined_result['status'] == 'Success' else "🔴"
                     
@@ -610,11 +639,42 @@ Return only the combined system prompt without additional explanation.
                         key=rating_key
                     )
 
-                    # Fix: Update the dataframe with the new rating
                     if new_rating != current_rating:
                         st.session_state.response_ratings[unique_id] = new_rating
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = new_rating
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                        
+                        saved_unique_id = save_export_entry(
+                            prompt_name="AI_Combined",
+                            system_prompt=st.session_state.combination_results['combined_prompt'],
+                            query=query_text,
+                            response=combined_result['response'],
+                            mode="Combination_Combined",
+                            remark="Rating updated",
+                            status=combined_result['status'],
+                            status_code=combined_result.get('status_code', 'N/A'),
+                            combination_strategy=st.session_state.combination_results.get('strategy'),
+                            combination_temperature=st.session_state.combination_results.get('temperature'),
+                            slider_weights=st.session_state.combination_results.get('slider_weights'),
+                            edited=True,
+                            rating=new_rating
+                        )
+                        st.session_state.combination_results['combined_result']['unique_id'] = saved_unique_id
+                        st.session_state.combination_results['combined_result']['rating'] = new_rating
+                        st.session_state.combination_results['combined_result']['edited'] = True
+                        
+                        new_df_row = pd.DataFrame([{
+                            'unique_id': saved_unique_id,
+                            'prompt_name': "AI_Combined",
+                            'system_prompt': st.session_state.combination_results['combined_prompt'],
+                            'query': query_text,
+                            'response': combined_result['response'],
+                            'status': combined_result['status'],
+                            'status_code': str(combined_result.get('status_code', 'N/A')),
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'edited': True,
+                            'remark': 'Rating updated',
+                            'rating': new_rating
+                        }])
+                        st.session_state.test_results = pd.concat([st.session_state.test_results, new_df_row], ignore_index=True)
                         st.rerun()
 
                     if edited_combined_response != combined_result['response']:
@@ -720,7 +780,7 @@ Return only the combined system prompt without additional explanation.
                                 st.session_state.response_ratings[unique_id] = 0
                                 new_result = pd.DataFrame([{
                                     'unique_id': unique_id,
-                                    'prompt_name': prompt_name.strip(),
+                                    'prompt_name': edit_prompt_name.strip(),
                                     'system_prompt': st.session_state.suggested_prompt,
                                     'query': query_text,
                                     'response': 'Prompt saved but not executed',
