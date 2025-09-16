@@ -198,10 +198,10 @@ Return only the combined system prompt without additional explanation.
                 return # Exit if combine fails
             
             # Step 2: Run Tests
-            if 'test_results' not in st.session_state:
+            if 'test_results' not in st.session_state or not isinstance(st.session_state.test_results, pd.DataFrame):
                 st.session_state.test_results = pd.DataFrame(columns=[
                     'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 
-                    'status', 'status_code', 'timestamp', 'edited', 'remark', 'rating'
+                    'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
                 ])
 
             if 'response_ratings' not in st.session_state:
@@ -296,33 +296,23 @@ Return only the combined system prompt without additional explanation.
                 if st.session_state.combination_results.get('combined_result'):
                     st.session_state.combination_results['combined_result']['system_prompt'] = combined_prompt_text
                     st.session_state.combination_results['combined_result']['edited'] = True
-                    unique_id = save_export_entry(
-                        prompt_name="AI_Combined",
-                        system_prompt=combined_prompt_text,
-                        query=query_text,
-                        response=st.session_state.combination_results['combined_result']['response'] if 'response' in st.session_state.combination_results['combined_result'] else None,
-                        mode="Combination_Combined",
-                        remark="Edited and saved",
-                        status=st.session_state.combination_results['combined_result']['status'],
-                        status_code=st.session_state.combination_results['combined_result'].get('status_code', 'N/A'),
-                        combination_strategy=st.session_state.combination_results.get('strategy'),
-                        combination_temperature=st.session_state.combination_results.get('temperature'),
-                        slider_weights=st.session_state.combination_results.get('slider_weights'),
-                        edited=True
-                    )
-                    new_result = pd.DataFrame([{
-                        'unique_id': unique_id,
-                        'prompt_name': "AI_Combined",
-                        'system_prompt': combined_prompt_text,
-                        'query': query_text,
-                        'response': st.session_state.combination_results['combined_result']['response'] if 'response' in st.session_state.combination_results['combined_result'] else None,
-                        'status': st.session_state.combination_results['combined_result']['status'],
-                        'status_code': str(st.session_state.combination_results['combined_result'].get('status_code', 'N/A')),
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'edited': True,
-                        'remark': 'Edited and saved'
-                    }])
-                    st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
+                    
+                    # Find and update the row in both DataFrames directly
+                    unique_id = st.session_state.combination_results['combined_result']['unique_id']
+                    if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                        export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
+                        if not export_row_index.empty:
+                            st.session_state.export_data.loc[export_row_index, 'system_prompt'] = combined_prompt_text
+                            st.session_state.export_data.loc[export_row_index, 'edited'] = True
+                            st.session_state.export_data.loc[export_row_index, 'remark'] = "Edited and saved"
+                    
+                    if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                        test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
+                        if not test_row_index.empty:
+                            st.session_state.test_results.loc[test_row_index, 'system_prompt'] = combined_prompt_text
+                            st.session_state.test_results.loc[test_row_index, 'edited'] = True
+                            st.session_state.test_results.loc[test_row_index, 'remark'] = "Edited and saved"
+
                 st.success("Combined prompt updated!")
                 st.rerun()
         
@@ -365,39 +355,23 @@ Return only the combined system prompt without additional explanation.
                         if new_rating != current_rating:
                             st.session_state.response_ratings[unique_id] = new_rating
                             
-                            saved_unique_id = save_export_entry(
-                                prompt_name=result['prompt_name'],
-                                system_prompt=result['system_prompt'],
-                                query=query_text,
-                                response=result['response'],
-                                mode="Combination_Individual",
-                                remark="Rating updated",
-                                status=result['status'],
-                                status_code=result.get('status_code', 'N/A'),
-                                combination_strategy=st.session_state.combination_results.get('strategy'),
-                                combination_temperature=st.session_state.combination_results.get('temperature'),
-                                slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                edited=True,
-                                rating=new_rating
-                            )
-                            st.session_state.combination_results['individual_results'][j]['unique_id'] = saved_unique_id
+                            # Find and update the rows in both DataFrames directly
+                            if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                                export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
+                                if not export_row_index.empty:
+                                    st.session_state.export_data.loc[export_row_index, 'rating'] = new_rating
+                                    st.session_state.export_data.loc[export_row_index, 'edited'] = True
+                                    st.session_state.export_data.loc[export_row_index, 'remark'] = 'Rating updated'
+                            
+                            if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                                test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
+                                if not test_row_index.empty:
+                                    st.session_state.test_results.loc[test_row_index, 'rating'] = new_rating
+                                    st.session_state.test_results.loc[test_row_index, 'edited'] = True
+                                    st.session_state.test_results.loc[test_row_index, 'remark'] = 'Rating updated'
+                            
                             st.session_state.combination_results['individual_results'][j]['rating'] = new_rating
                             st.session_state.combination_results['individual_results'][j]['edited'] = True
-                            
-                            new_df_row = pd.DataFrame([{
-                                'unique_id': saved_unique_id,
-                                'prompt_name': result['prompt_name'],
-                                'system_prompt': result['system_prompt'],
-                                'query': query_text,
-                                'response': result['response'],
-                                'status': result['status'],
-                                'status_code': str(result.get('status_code', 'N/A')),
-                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                'edited': True,
-                                'remark': 'Rating updated',
-                                'rating': new_rating
-                            }])
-                            st.session_state.test_results = pd.concat([st.session_state.test_results, new_df_row], ignore_index=True)
                             st.rerun()
 
                         if edited_individual_response != result['response']:
@@ -406,26 +380,22 @@ Return only the combined system prompt without additional explanation.
                                 if st.button(f"💾 Save Response", key=f"save_individual_{j}"):
                                     st.session_state.combination_results['individual_results'][j]['response'] = edited_individual_response
                                     st.session_state.combination_results['individual_results'][j]['edited'] = True
-                                    saved_unique_id = save_export_entry(
-                                        prompt_name=result['prompt_name'],
-                                        system_prompt=result['system_prompt'],
-                                        query=query_text,
-                                        response=edited_individual_response,
-                                        mode="Combination_Individual",
-                                        remark="Edited and saved",
-                                        status=result['status'],
-                                        status_code=result.get('status_code', 'N/A'),
-                                        combination_strategy=st.session_state.combination_results.get('strategy'),
-                                        combination_temperature=st.session_state.combination_results.get('temperature'),
-                                        slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                        edited=True,
-                                        rating=st.session_state.response_ratings.get(unique_id, 0)
-                                    )
-                                    st.session_state.response_ratings[saved_unique_id] = st.session_state.response_ratings.get(unique_id, 0)
-                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
-                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'response'] = edited_individual_response
-                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'edited'] = True
-                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'remark'] = 'Edited and saved'
+                                    
+                                    # Find and update the rows in both DataFrames directly
+                                    if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                                        export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
+                                        if not export_row_index.empty:
+                                            st.session_state.export_data.loc[export_row_index, 'response'] = edited_individual_response
+                                            st.session_state.export_data.loc[export_row_index, 'edited'] = True
+                                            st.session_state.export_data.loc[export_row_index, 'remark'] = 'Edited and saved'
+                                    
+                                    if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                                        test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
+                                        if not test_row_index.empty:
+                                            st.session_state.test_results.loc[test_row_index, 'response'] = edited_individual_response
+                                            st.session_state.test_results.loc[test_row_index, 'edited'] = True
+                                            st.session_state.test_results.loc[test_row_index, 'remark'] = 'Edited and saved'
+                                            
                                     st.success("Response updated!")
                                     st.rerun()
                             with col_reverse:
@@ -439,26 +409,22 @@ Return only the combined system prompt without additional explanation.
                                         st.session_state.combination_results['individual_results'][j]['system_prompt'] = suggestion
                                         st.session_state.combination_results['individual_results'][j]['edited'] = True
                                         st.session_state.combination_results['individual_results'][j]['remark'] = 'Reverse prompt generated'
-                                        saved_unique_id = save_export_entry(
-                                            prompt_name=result['prompt_name'],
-                                            system_prompt=suggestion,
-                                            query=query_text,
-                                            response=edited_individual_response,
-                                            mode="Combination_Individual",
-                                            remark="Reverse prompt generated",
-                                            status=result['status'],
-                                            status_code=result.get('status_code', 'N/A'),
-                                            combination_strategy=st.session_state.combination_results.get('strategy'),
-                                            combination_temperature=st.session_state.combination_results.get('temperature'),
-                                            slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                            edited=True,
-                                            rating=st.session_state.response_ratings.get(unique_id, 0)
-                                        )
-                                        st.session_state.response_ratings[saved_unique_id] = st.session_state.response_ratings.get(unique_id, 0)
-                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
-                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'system_prompt'] = suggestion
-                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'edited'] = True
-                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'remark'] = 'Reverse prompt generated'
+
+                                        # Find and update the rows in both DataFrames directly
+                                        if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                                            export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
+                                            if not export_row_index.empty:
+                                                st.session_state.export_data.loc[export_row_index, 'system_prompt'] = suggestion
+                                                st.session_state.export_data.loc[export_row_index, 'edited'] = True
+                                                st.session_state.export_data.loc[export_row_index, 'remark'] = 'Reverse prompt generated'
+                                        
+                                        if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                                            test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
+                                            if not test_row_index.empty:
+                                                st.session_state.test_results.loc[test_row_index, 'system_prompt'] = suggestion
+                                                st.session_state.test_results.loc[test_row_index, 'edited'] = True
+                                                st.session_state.test_results.loc[test_row_index, 'remark'] = 'Reverse prompt generated'
+
                                         st.success("Prompt updated based on edited response!")
                                         st.rerun()
 
@@ -642,39 +608,23 @@ Return only the combined system prompt without additional explanation.
                     if new_rating != current_rating:
                         st.session_state.response_ratings[unique_id] = new_rating
                         
-                        saved_unique_id = save_export_entry(
-                            prompt_name="AI_Combined",
-                            system_prompt=st.session_state.combination_results['combined_prompt'],
-                            query=query_text,
-                            response=combined_result['response'],
-                            mode="Combination_Combined",
-                            remark="Rating updated",
-                            status=combined_result['status'],
-                            status_code=combined_result.get('status_code', 'N/A'),
-                            combination_strategy=st.session_state.combination_results.get('strategy'),
-                            combination_temperature=st.session_state.combination_results.get('temperature'),
-                            slider_weights=st.session_state.combination_results.get('slider_weights'),
-                            edited=True,
-                            rating=new_rating
-                        )
-                        st.session_state.combination_results['combined_result']['unique_id'] = saved_unique_id
+                        # Find and update the rows in both DataFrames directly
+                        if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                            export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
+                            if not export_row_index.empty:
+                                st.session_state.export_data.loc[export_row_index, 'rating'] = new_rating
+                                st.session_state.export_data.loc[export_row_index, 'edited'] = True
+                                st.session_state.export_data.loc[export_row_index, 'remark'] = 'Rating updated'
+                        
+                        if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                            test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
+                            if not test_row_index.empty:
+                                st.session_state.test_results.loc[test_row_index, 'rating'] = new_rating
+                                st.session_state.test_results.loc[test_row_index, 'edited'] = True
+                                st.session_state.test_results.loc[test_row_index, 'remark'] = 'Rating updated'
+
                         st.session_state.combination_results['combined_result']['rating'] = new_rating
                         st.session_state.combination_results['combined_result']['edited'] = True
-                        
-                        new_df_row = pd.DataFrame([{
-                            'unique_id': saved_unique_id,
-                            'prompt_name': "AI_Combined",
-                            'system_prompt': st.session_state.combination_results['combined_prompt'],
-                            'query': query_text,
-                            'response': combined_result['response'],
-                            'status': combined_result['status'],
-                            'status_code': str(combined_result.get('status_code', 'N/A')),
-                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            'edited': True,
-                            'remark': 'Rating updated',
-                            'rating': new_rating
-                        }])
-                        st.session_state.test_results = pd.concat([st.session_state.test_results, new_df_row], ignore_index=True)
                         st.rerun()
 
                     if edited_combined_response != combined_result['response']:
@@ -683,26 +633,22 @@ Return only the combined system prompt without additional explanation.
                             if st.button("💾 Save Combined Response"):
                                 st.session_state.combination_results['combined_result']['response'] = edited_combined_response
                                 st.session_state.combination_results['combined_result']['edited'] = True
-                                saved_unique_id = save_export_entry(
-                                    prompt_name="AI_Combined",
-                                    system_prompt=st.session_state.combination_results['combined_prompt'],
-                                    query=query_text,
-                                    response=edited_combined_response,
-                                    mode="Combination_Combined",
-                                    remark="Edited and saved",
-                                    status=combined_result['status'],
-                                    status_code=combined_result.get('status_code', 'N/A'),
-                                    combination_strategy=st.session_state.combination_results.get('strategy'),
-                                    combination_temperature=st.session_state.combination_results.get('temperature'),
-                                    slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                    edited=True,
-                                    rating=st.session_state.response_ratings.get(unique_id, 0)
-                                )
-                                st.session_state.response_ratings[saved_unique_id] = st.session_state.response_ratings.get(unique_id, 0)
-                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
-                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'response'] = edited_combined_response
-                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'edited'] = True
-                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'remark'] = 'Edited and saved'
+                                
+                                # Find and update the rows in both DataFrames directly
+                                if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                                    export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == combined_result['unique_id']].index
+                                    if not export_row_index.empty:
+                                        st.session_state.export_data.loc[export_row_index, 'response'] = edited_combined_response
+                                        st.session_state.export_data.loc[export_row_index, 'edited'] = True
+                                        st.session_state.export_data.loc[export_row_index, 'remark'] = 'Edited and saved'
+                                
+                                if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                                    test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == combined_result['unique_id']].index
+                                    if not test_row_index.empty:
+                                        st.session_state.test_results.loc[test_row_index, 'response'] = edited_combined_response
+                                        st.session_state.test_results.loc[test_row_index, 'edited'] = True
+                                        st.session_state.test_results.loc[test_row_index, 'remark'] = 'Edited and saved'
+
                                 st.success("Combined response updated!")
                                 st.rerun()
                         with col_reverse:
@@ -714,26 +660,22 @@ Return only the combined system prompt without additional explanation.
                                     st.session_state.combination_results['combined_result']['system_prompt'] = suggestion
                                     st.session_state.combination_results['combined_result']['edited'] = True
                                     st.session_state.combination_results['combined_result']['remark'] = 'Reverse prompt generated'
-                                    saved_unique_id = save_export_entry(
-                                        prompt_name="AI_Combined",
-                                        system_prompt=suggestion,
-                                        query=query_text,
-                                        response=edited_combined_response,
-                                        mode="Combination_Combined",
-                                        remark="Reverse prompt generated",
-                                        status=combined_result['status'],
-                                        status_code=combined_result.get('status_code', 'N/A'),
-                                        combination_strategy=st.session_state.combination_results.get('strategy'),
-                                        combination_temperature=st.session_state.combination_results.get('temperature'),
-                                        slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                        edited=True,
-                                        rating=st.session_state.response_ratings.get(unique_id, 0)
-                                    )
-                                    st.session_state.response_ratings[saved_unique_id] = st.session_state.response_ratings.get(unique_id, 0)
-                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
-                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'system_prompt'] = suggestion
-                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'edited'] = True
-                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == saved_unique_id, 'remark'] = 'Reverse prompt generated'
+                                    
+                                    # Find and update the rows in both DataFrames directly
+                                    if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                                        export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == combined_result['unique_id']].index
+                                        if not export_row_index.empty:
+                                            st.session_state.export_data.loc[export_row_index, 'system_prompt'] = suggestion
+                                            st.session_state.export_data.loc[export_row_index, 'edited'] = True
+                                            st.session_state.export_data.loc[export_row_index, 'remark'] = 'Reverse prompt generated'
+                                    
+                                    if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                                        test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == combined_result['unique_id']].index
+                                        if not test_row_index.empty:
+                                            st.session_state.test_results.loc[test_row_index, 'system_prompt'] = suggestion
+                                            st.session_state.test_results.loc[test_row_index, 'edited'] = True
+                                            st.session_state.test_results.loc[test_row_index, 'remark'] = 'Reverse prompt generated'
+
                                     st.success("Combined prompt updated based on edited response!")
                                     st.rerun()
 
@@ -780,7 +722,7 @@ Return only the combined system prompt without additional explanation.
                                 st.session_state.response_ratings[unique_id] = 0
                                 new_result = pd.DataFrame([{
                                     'unique_id': unique_id,
-                                    'prompt_name': edit_prompt_name.strip(),
+                                    'prompt_name': prompt_name.strip(),
                                     'system_prompt': st.session_state.suggested_prompt,
                                     'query': query_text,
                                     'response': 'Prompt saved but not executed',
