@@ -1,71 +1,126 @@
+# individual.py (patched: uses save_export_entry for all saves, updates export_data live,
+# no per-row preview; ratings update dynamically in export preview table)
 import streamlit as st
-import google.generativeai as genai
 import pandas as pd
 from datetime import datetime
 import uuid
 import time
+import os
+
+# Load .env to get GEMINI_API_KEY
+from dotenv import load_dotenv
+load_dotenv()
+
+# Try to import google.generativeai (Gemini)
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
+
 from app.prompt_management import ensure_prompt_names
-from app.api_utils import call_api, suggest_prompt_from_response
+from app.api_utils import call_api
 from app.utils import add_result_row
 from app.export import save_export_entry
 
-def render_individual_testing(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func, gemini_api_key=''):
+# Load Gemini API key from .env
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# Initialize Gemini if available
+gemini_available = False
+gemini_model = None
+if GEMINI_API_KEY and genai is not None:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_model = genai.GenerativeModel("gemini-2.5-flash")
+        gemini_available = True
+    except Exception:
+        gemini_model = None
+        gemini_available = False
+
+
+# Default fallback API call function
+def _default_call_api_func(system_prompt, query, body_template, headers, response_path):
+    return {
+        "response": f"call_api not configured. Tried to call with query: {query[:200]}",
+        "status": "Failed",
+        "status_code": "N/A"
+    }
+
+
+# Default suggest function using Gemini (if available)
+def _gemini_suggest_func(response_text, original_query):
+    if not gemini_available or not gemini_model:
+        return "Gemini is not available. Cannot suggest prompt."
+
+    prompt = f"""
+You are given a user query and a response produced by a model.
+Query: {original_query}
+Response: {response_text}
+
+Your task: Suggest an improved system prompt that would likely produce that kind of response.
+Output only the improved system prompt (no extra commentary).
+"""
+    try:
+        result = gemini_model.generate_content(prompt)
+        return result.text.strip() if hasattr(result, "text") else str(result)
+    except Exception as e:
+        return f"Error generating suggestion: {str(e)}"
+
+
+def render_individual_testing(
+    api_url,
+    query_text,
+    body_template,
+    headers,
+    response_path,
+    call_api_func=None,
+    suggest_func=None,
+):
+    """
+    Individual testing UI.
+    call_api_func: function(system_prompt, query, body_template, headers, response_path) -> dict
+    suggest_func: function(response_text, original_query) -> str
+    """
+
     st.header("🧪 Individual Testing")
 
-    # Initialize export_data if missing
+    call_api_func = call_api_func or _default_call_api_func
+    suggest_func = suggest_func or _gemini_suggest_func
+
+    # Expected schema for both test_results and export_data
+    expected_columns = [
+        'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
+        'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
+    ]
+
+    # Ensure test_results exists and has expected columns
+    if 'test_results' not in st.session_state or not isinstance(st.session_state.test_results, pd.DataFrame):
+        st.session_state.test_results = pd.DataFrame(columns=expected_columns)
+    else:
+        for c in expected_columns:
+            if c not in st.session_state.test_results.columns:
+                st.session_state.test_results[c] = None
+
+    # Ensure export_data exists and has expected columns (export.py depends on this)
     if 'export_data' not in st.session_state or not isinstance(st.session_state.export_data, pd.DataFrame):
-        st.session_state.export_data = pd.DataFrame(columns=[
-            'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
-            'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query',
-            'combination_strategy', 'combination_temperature', 'slider_weights',
-            'rating', 'remark'
-        ])
+        st.session_state.export_data = pd.DataFrame(columns=expected_columns)
+    else:
+        for c in expected_columns:
+            if c not in st.session_state.export_data.columns:
+                st.session_state.export_data[c] = None
 
-    # Session state cleanup
-    if 'response_ratings' not in st.session_state:
+    if 'response_ratings' not in st.session_state or not isinstance(st.session_state.response_ratings, dict):
         st.session_state.response_ratings = {}
-    if 'test_results' in st.session_state and isinstance(st.session_state.test_results, pd.DataFrame):
-        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
-        st.session_state.test_results = st.session_state.test_results[
-            st.session_state.test_results['response'].notnull() & st.session_state.test_results['status'].notnull()
-        ].reset_index(drop=True)
 
-    # Helper to normalize uid
-    def normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=None):
-        if isinstance(maybe_uid, str) and maybe_uid:
-            uid = maybe_uid
-        else:
-            uid = generated_uid or f"Individual_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4()}"
+    if 'prompts' not in st.session_state or not isinstance(st.session_state.prompts, list):
+        st.session_state.prompts = []
 
-        try:
-            exists = uid in st.session_state.export_data.get('unique_id', pd.Series(dtype="object")).values
-        except Exception:
-            exists = False
+    if 'prompt_names' not in st.session_state or not isinstance(st.session_state.prompt_names, list):
+        st.session_state.prompt_names = []
 
-        if not exists:
-            row = export_row_dict.copy()
-            row['unique_id'] = uid
-            if 'timestamp' not in row:
-                row['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            for col in st.session_state.export_data.columns:
-                if col not in row:
-                    row[col] = None
-            st.session_state.export_data = pd.concat([st.session_state.export_data, pd.DataFrame([row])], ignore_index=True)
-
-        if uid not in st.session_state.response_ratings:
-            if generated_uid and generated_uid in st.session_state.response_ratings:
-                st.session_state.response_ratings[uid] = st.session_state.response_ratings.pop(generated_uid)
-            else:
-                st.session_state.response_ratings[uid] = export_row_dict.get('rating', 0) or 0
-
-        return uid
-
-    # Debug: Log gemini_api_key and api_url
-    st.write(f"Debug: Gemini API Key available: {bool(gemini_api_key)}")
-    st.write(f"Debug: API URL: {api_url}")
-
-    # Test All Prompts
-    if st.button("🚀 Test All Prompts", type="primary", disabled=not (api_url and st.session_state.get('prompts') and query_text)):
+    # ---- Run all prompts button ----
+    can_run_all = bool(api_url) and bool(st.session_state.get('prompts')) and bool(query_text)
+    if st.button("🚀 Test All Prompts", type="primary", disabled=not can_run_all):
         if not api_url:
             st.error("Please enter an API endpoint URL")
         elif not st.session_state.get('prompts'):
@@ -80,33 +135,43 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
-                # Debug: Log prompts and names
-                st.write(f"Debug: Prompts={st.session_state.prompts}, Names={st.session_state.prompt_names}")
-
                 for i, (system_prompt, prompt_name) in enumerate(zip(st.session_state.prompts, st.session_state.prompt_names)):
-                    status_text.text(f"Testing {prompt_name} (Prompt {i+1}/{total_prompts})...")
-                    st.write(f"Debug: Testing Prompt '{prompt_name}' with query '{query_text}'")
-
+                    status_text.text(f"Testing {prompt_name} ({i+1}/{total_prompts})...")
                     try:
                         result = call_api_func(
                             system_prompt=system_prompt,
-                            query=query_text,  # Changed from query_text to query
+                            query=query_text,
                             body_template=body_template,
                             headers=headers,
                             response_path=response_path
-                        )
-                        response_text = result.get('response', None)
+                        ) or {}
+                        response_text = result.get('response')
                         status = result.get('status', 'Failed')
                         status_code = str(result.get('status_code', 'N/A'))
                     except Exception as e:
-                        st.error(f"Error in API call for {prompt_name}: {str(e)}")
                         response_text = f"Error: {str(e)}"
                         status = 'Failed'
                         status_code = 'N/A'
 
-                    st.write(f"Debug: Result for '{prompt_name}': status={status}, status_code={status_code}, response={response_text[:50] if response_text else 'None'}...")
+                    # Save via save_export_entry to ensure export_data is canonical
+                    unique_id = save_export_entry(
+                        prompt_name=prompt_name,
+                        system_prompt=system_prompt,
+                        query=query_text,
+                        response=response_text,
+                        mode="Individual",
+                        remark="Saved and ran",
+                        status=status,
+                        status_code=status_code,
+                        rating=0,
+                        edited=False
+                    )
 
-                    export_row_dict = {
+                    # register default rating for this unique_id
+                    st.session_state.response_ratings[unique_id] = 0
+
+                    new_result = pd.DataFrame([{
+                        'unique_id': unique_id,
                         'test_type': 'Individual',
                         'prompt_name': prompt_name,
                         'system_prompt': system_prompt,
@@ -117,481 +182,273 @@ def render_individual_testing(api_url, query_text, body_template, headers, respo
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'rating': 0,
                         'remark': 'Saved and ran',
-                        'edited': False,
-                        'step': None,
-                        'input_query': None,
-                        'combination_strategy': None,
-                        'combination_temperature': None,
-                        'slider_weights': None
-                    }
+                        'edited': False
+                    }])
+                    st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
 
-                    maybe_uid = save_export_entry(
-                        prompt_name=prompt_name,
-                        system_prompt=system_prompt,
-                        query=query_text,
-                        response=response_text,
-                        mode="Individual",
-                        remark="Saved and ran",
-                        status=status,
-                        status_code=status_code,
-                        rating=0
-                    )
-
-                    generated_uid = f"Individual_{prompt_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
-                    unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
-
-                    add_result_row(
-                        test_type='Individual',
-                        prompt_name=prompt_name,
-                        system_prompt=system_prompt,
-                        query=query_text,
-                        response=response_text,
-                        status=status,
-                        status_code=status_code,
-                        remark='Saved and ran',
-                        rating=0,
-                        edited=False,
-                        step=None,
-                        input_query=None,
-                        combination_strategy=None,
-                        combination_temperature=None
-                    )
-
-                    last_index = st.session_state.test_results.index[-1]
-                    if st.session_state.test_results.at[last_index, 'unique_id'] != unique_id:
-                        st.session_state.test_results.at[last_index, 'unique_id'] = unique_id
-
-                    st.session_state.response_ratings[unique_id] = 0
-                    progress_bar.progress((i + 1) / total_prompts)
-
-                    # Add delay to avoid rate-limiting
+                    progress_bar.progress((i + 1) / max(1, total_prompts))
                     time.sleep(1)
 
                 status_text.text("Tests completed!")
                 st.success(f"Tested {total_prompts} prompts!")
+
+    # ---- Display Results (expanders) ----
+    st.subheader("Saved Results")
+
+    if st.session_state.test_results.empty:
+        st.info("No results to display yet. Run some tests first!")
+        return
+
+    # Filter for individual tests with responses, without resetting index to preserve original indices
+    individual_results = st.session_state.test_results[
+        (st.session_state.test_results['test_type'] == 'Individual') &
+        st.session_state.test_results['response'].notna()
+    ]
+
+    if individual_results.empty:
+        st.info("No individual test results to display.")
+        return
+
+    # show a simple metric
+    try:
+        success_count = int(len(individual_results[individual_results['status'] == 'Success']))
+        st.metric("Successful Tests", f"{success_count}/{len(individual_results)}")
+    except Exception:
+        st.metric("Results", f"{len(individual_results)} tests")
+
+    # iterate and show expanders using original indices
+    for i, result in individual_results.iterrows():
+        unique_id = str(result['unique_id'])
+        prompt_name = result.get('prompt_name') or f"Prompt {i+1}"
+        status_color = "🟢" if result['status'] == 'Success' else "🔴"
+        with st.expander(f"{status_color} {prompt_name} — {result.get('status', 'Unknown')}"):
+            st.write("**System Prompt:**")
+            st.text(result.get('system_prompt', ''))
+            st.write("**Query:**")
+            st.text(result.get('query', ''))
+            st.write("**Response:**")
+
+            edited_response = st.text_area(
+                "Response (editable):",
+                value=result['response'] if pd.notnull(result['response']) else "",
+                height=150,
+                key=f"edit_response_{i}"
+            )
+
+            # Rating slider linked to unique_id
+            current_rating = st.session_state.response_ratings.get(unique_id, int(result.get('rating', 0) or 0))
+            new_rating = st.slider(
+                "Rate this response (0-10):",
+                min_value=0,
+                max_value=10,
+                value=int(current_rating),
+                key=f"rating_{i}"
+            )
+
+            # Update ratings dynamically in DataFrames
+            if new_rating != result.get('rating', 0):
+                st.session_state.response_ratings[unique_id] = new_rating
+                st.session_state.test_results.at[i, 'rating'] = new_rating
+                st.session_state.test_results.at[i, 'edited'] = True
+                if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                    export_mask = st.session_state.export_data['unique_id'] == unique_id
+                    if export_mask.any():
+                        st.session_state.export_data.loc[export_mask, 'rating'] = new_rating
+                        st.session_state.export_data.loc[export_mask, 'edited'] = True
+                # refresh UI so slider reflects everywhere
                 st.rerun()
 
-    # Display Results
-    st.subheader("Saved Results")
-    if 'test_results' not in st.session_state or st.session_state.test_results.empty:
-        st.info("No results to display yet. Run some tests first!")
-    else:
-        display_df = st.session_state.test_results[
-            (st.session_state.test_results['test_type'] == 'Individual') &
-            st.session_state.test_results['response'].notna()
-        ].copy()
+            if edited_response != (result['response'] or ""):
+                if st.button("💾 Save Edited Response", key=f"save_edited_{i}"):
+                    st.session_state.test_results.at[i, 'response'] = edited_response
+                    st.session_state.test_results.at[i, 'edited'] = True
 
-        if display_df.empty:
-            st.info("No individual test results to display.")
-        else:
-            success_count = len(display_df[display_df['status'] == 'Success'])
-            st.metric("Successful Tests", f"{success_count}/{len(display_df)}")
-
-            for i, result in display_df.iterrows():
-                unique_id = result['unique_id']
-                prompt_name = result['prompt_name']
-                with st.expander(f"{'🟢' if result['status'] == 'Success' else '🔴'} {prompt_name} - {result['status']}"):
-                    st.write("**System Prompt:**")
-                    st.text(result['system_prompt'])
-                    st.write("**Query:**")
-                    st.text(result['query'])
-                    st.write("**Response:**")
-
-                    edited_response = st.text_area(
-                        "Response (editable):",
-                        value=result['response'] if pd.notnull(result['response']) else "",
-                        height=150,
-                        key=f"edit_response_{i}"
+                    # save edited response to export and capture unique_id
+                    saved_unique_id = save_export_entry(
+                        prompt_name=prompt_name,
+                        system_prompt=result.get('system_prompt', ''),
+                        query=result.get('query', ''),
+                        response=edited_response,
+                        mode="Individual",
+                        remark="Edited and saved",
+                        status=result.get('status', 'Unknown'),
+                        status_code=result.get('status_code', 'N/A'),
+                        rating=new_rating,
+                        edited=True
                     )
 
-                    # Rating slider
-                    current_rating = st.session_state.response_ratings.get(unique_id, int(result.get('rating', 0) or 0))
-                    new_rating = st.slider(
-                        "Rate this response (0-10):",
-                        min_value=0,
-                        max_value=10,
-                        value=int(current_rating),
-                        key=f"rating_{unique_id}"
-                    )
+                    # register rating for the saved_unique_id
+                    st.session_state.response_ratings[saved_unique_id] = new_rating
 
-                    if new_rating != current_rating:
-                        st.session_state.response_ratings[unique_id] = new_rating
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = new_rating
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                        if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                            st.session_state.export_data.loc[
-                                st.session_state.export_data['unique_id'] == unique_id, 'rating'
-                            ] = new_rating
-                            st.session_state.export_data.loc[
-                                st.session_state.export_data['unique_id'] == unique_id, 'edited'
-                            ] = True
+                    # update the test_results row with the returned unique_id
+                    st.session_state.test_results.at[i, 'unique_id'] = saved_unique_id
+                    st.session_state.test_results.at[i, 'remark'] = 'Edited and saved'
+                    st.success("Edited response saved.")
+                    st.rerun()
+
+            # Suggest Prompt (Gemini-assisted)
+            suggest_disabled = not gemini_available
+            if st.button("🔮 Suggest Prompt for This Response", key=f"suggest_btn_{i}", disabled=suggest_disabled):
+                with st.spinner("Generating prompt suggestion..."):
+                    suggestion = suggest_func(edited_response if edited_response else (result['response'] or ""), result['query'])
+                    st.session_state[f"suggested_prompt_{i}"] = suggestion
+                    st.session_state[f"suggested_prompt_name_{i}"] = f"Suggested Prompt {len(st.session_state.get('prompts', [])) + 1}"
+
+            # If suggestion exists, show save / save & run UI
+            if st.session_state.get(f"suggested_prompt_{i}"):
+                st.write("**Suggested System Prompt:**")
+                st.text_area("Suggested Prompt:", value=st.session_state[f"suggested_prompt_{i}"], height=120, key=f"suggested_display_{i}", disabled=True)
+
+                prompt_name_input = st.text_input(
+                    "Name this suggested prompt:",
+                    value=st.session_state.get(f"suggested_prompt_name_{i}", f"Suggested Prompt {i+1}"),
+                    key=f"suggested_name_input_{i}"
+                )
+
+                c1, c2 = st.columns(2)
+
+                # Save only
+                with c1:
+                    if st.button("💾 Save Prompt", key=f"save_suggest_{i}"):
+                        suggested_prompt = st.session_state.get(f"suggested_prompt_{i}")
+                        saved_name = prompt_name_input or f"Suggested Prompt {i+1}"
+                        # Save to export_data via save_export_entry (Not executed)
+                        saved_unique_id = save_export_entry(
+                            prompt_name=saved_name,
+                            system_prompt=suggested_prompt,
+                            query=result.get('query', ''),
+                            response='Prompt saved but not executed',
+                            mode='Individual',
+                            remark='Saved only',
+                            status='Not Executed',
+                            status_code='N/A',
+                            rating=0,
+                            edited=False
+                        )
+
+                        # register rating default for this new row
+                        st.session_state.response_ratings[saved_unique_id] = 0
+
+                        # add to prompts list
+                        st.session_state.prompts.append(suggested_prompt)
+                        st.session_state.prompt_names.append(saved_name)
+
+                        # append to test_results
+                        new_result = pd.DataFrame([{
+                            'unique_id': saved_unique_id,
+                            'test_type': 'Individual',
+                            'prompt_name': saved_name,
+                            'system_prompt': suggested_prompt,
+                            'query': result.get('query', ''),
+                            'response': 'Prompt saved but not executed',
+                            'status': 'Not Executed',
+                            'status_code': 'N/A',
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'rating': 0,
+                            'remark': 'Saved only',
+                            'edited': False
+                        }])
+                        st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
+
+                        # clear suggestion state
+                        del st.session_state[f"suggested_prompt_{i}"]
+                        del st.session_state[f"suggested_prompt_name_{i}"]
+                        st.success(f"Saved suggested prompt: {saved_name}")
                         st.rerun()
 
-                    if edited_response != (result['response'] or ""):
-                        col_save, col_reverse = st.columns(2)
-                        with col_save:
-                            if st.button(f"💾 Save Edited Response", key=f"save_response_{i}"):
-                                export_row_dict = {
-                                    'test_type': 'Individual',
-                                    'prompt_name': prompt_name,
-                                    'system_prompt': result['system_prompt'],
-                                    'query': result['query'],
-                                    'response': edited_response,
-                                    'status': result['status'],
-                                    'status_code': result['status_code'],
-                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    'rating': new_rating,
-                                    'remark': 'Edited and saved',
-                                    'edited': True,
-                                    'step': None,
-                                    'input_query': None,
-                                    'combination_strategy': None,
-                                    'combination_temperature': None,
-                                    'slider_weights': None
-                                }
-
-                                maybe_uid = save_export_entry(
-                                    prompt_name=prompt_name,
-                                    system_prompt=result['system_prompt'],
-                                    query=result['query'],
-                                    response=edited_response,
-                                    mode="Individual",
-                                    remark="Edited and saved",
-                                    status=result['status'],
-                                    status_code=result['status_code'],
-                                    rating=new_rating,
-                                    edited=True
-                                )
-
-                                saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=unique_id)
-                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'response'] = edited_response
-                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark'] = 'Edited and saved'
-                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
-                                st.session_state.response_ratings[saved_unique_id] = new_rating
-                                if saved_unique_id != unique_id:
-                                    st.session_state.response_ratings.pop(unique_id, None)
-                                st.success("Response updated!")
-                                st.rerun()
-
-                        with col_reverse:
-                            if st.button(f"🔄 Reverse Prompt", key=f"reverse_{i}", disabled=not gemini_api_key):
-                                with st.spinner("Generating updated prompt..."):
-                                    try:
-                                        genai.configure(api_key=gemini_api_key)
-                                        suggestion = suggest_func(edited_response, result['query'])
-                                        export_row_dict = {
-                                            'test_type': 'Individual',
-                                            'prompt_name': prompt_name,
-                                            'system_prompt': suggestion,
-                                            'query': result['query'],
-                                            'response': edited_response,
-                                            'status': result['status'],
-                                            'status_code': result['status_code'],
-                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            'rating': new_rating,
-                                            'remark': 'Reverse prompt generated',
-                                            'edited': True,
-                                            'step': None,
-                                            'input_query': None,
-                                            'combination_strategy': None,
-                                            'combination_temperature': None,
-                                            'slider_weights': None
-                                        }
-
-                                        maybe_uid = save_export_entry(
-                                            prompt_name=prompt_name,
-                                            system_prompt=suggestion,
-                                            query=result['query'],
-                                            response=edited_response,
-                                            mode="Individual",
-                                            remark="Reverse prompt generated",
-                                            status=result['status'],
-                                            status_code=result['status_code'],
-                                            rating=new_rating,
-                                            edited=True
-                                        )
-
-                                        saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=unique_id)
-                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'system_prompt'] = suggestion
-                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark'] = 'Reverse prompt generated'
-                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
-                                        st.session_state.response_ratings[saved_unique_id] = new_rating
-                                        if saved_unique_id != unique_id:
-                                            st.session_state.response_ratings.pop(unique_id, None)
-                                        st.success("Prompt updated based on edited response!")
-                                        st.rerun()
-                                    except Exception as e:
-                                        st.error(f"Error generating reverse prompt: {str(e)}")
-
-                    if st.button(f"🔮 Suggest Prompt for This Response", key=f"suggest_btn_{i}", disabled=not gemini_api_key):
-                        with st.spinner("Generating prompt suggestion..."):
+                # Save & Run
+                with c2:
+                    if st.button("🏃 Save & Run Prompt", key=f"save_run_suggest_{i}"):
+                        suggested_prompt = st.session_state.get(f"suggested_prompt_{i}")
+                        saved_name = prompt_name_input or f"Suggested Prompt {i+1}"
+                        with st.spinner("Running suggested prompt..."):
                             try:
-                                genai.configure(api_key=gemini_api_key)
-                                suggestion = suggest_func(edited_response if edited_response else (result['response'] or ""), result['query'])
-                                st.session_state[f"suggested_prompt_{i}"] = suggestion
-                                st.session_state[f"suggested_prompt_name_{i}"] = f"Suggested Prompt {len(st.session_state.get('prompts', [])) + 1}"
-                                st.write("**Suggested System Prompt:**")
-                                st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_{i}", disabled=True)
+                                run_result = call_api_func(
+                                    system_prompt=suggested_prompt,
+                                    query=result.get('query', ''),
+                                    body_template=body_template,
+                                    headers=headers,
+                                    response_path=response_path
+                                ) or {}
+                                response_text = run_result.get('response')
+                                status = run_result.get('status', 'Failed')
+                                status_code = str(run_result.get('status_code', 'N/A'))
                             except Exception as e:
-                                st.error(f"Error generating suggestion: {str(e)}")
+                                response_text = f"Error: {str(e)}"
+                                status = 'Failed'
+                                status_code = 'N/A'
 
-                    if st.session_state.get(f"suggested_prompt_{i}"):
-                        col_save, col_save_run, col_edit = st.columns(3)
-                        with col_save:
-                            prompt_name = st.text_input(
-                                "Prompt Name:",
-                                value=st.session_state[f"suggested_prompt_name_{i}"],
-                                key=f"suggest_name_{i}"
+                            # Save to export_data via save_export_entry
+                            saved_unique_id = save_export_entry(
+                                prompt_name=saved_name,
+                                system_prompt=suggested_prompt,
+                                query=result.get('query', ''),
+                                response=response_text,
+                                mode='Individual',
+                                remark='Saved and ran',
+                                status=status,
+                                status_code=status_code,
+                                rating=0,
+                                edited=False
                             )
-                            if st.button("💾 Save as Prompt", key=f"save_suggest_{i}"):
-                                if prompt_name.strip():
-                                    export_row_dict = {
-                                        'test_type': 'Individual',
-                                        'prompt_name': prompt_name.strip(),
-                                        'system_prompt': st.session_state[f"suggested_prompt_{i}"],
-                                        'query': result['query'],
-                                        'response': 'Prompt saved but not executed',
-                                        'status': 'Not Executed',
-                                        'status_code': 'N/A',
-                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        'rating': 0,
-                                        'remark': 'Save only',
-                                        'edited': False,
-                                        'step': None,
-                                        'input_query': None,
-                                        'combination_strategy': None,
-                                        'combination_temperature': None,
-                                        'slider_weights': None
-                                    }
 
-                                    maybe_uid = save_export_entry(
-                                        prompt_name=prompt_name.strip(),
-                                        system_prompt=st.session_state[f"suggested_prompt_{i}"],
-                                        query=result['query'],
-                                        response='Prompt saved but not executed',
-                                        mode='Individual',
-                                        remark='Save only',
-                                        status='Not Executed',
-                                        status_code='N/A',
-                                        rating=0
-                                    )
+                            # register rating default for this new row
+                            st.session_state.response_ratings[saved_unique_id] = 0
 
-                                    generated_uid = f"Individual_{prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
-                                    saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
+                            # add to prompts list
+                            st.session_state.prompts.append(suggested_prompt)
+                            st.session_state.prompt_names.append(saved_name)
 
-                                    add_result_row(
-                                        test_type='Individual',
-                                        prompt_name=prompt_name.strip(),
-                                        system_prompt=st.session_state[f"suggested_prompt_{i}"],
-                                        query=result['query'],
-                                        response='Prompt saved but not executed',
-                                        status='Not Executed',
-                                        status_code='N/A',
-                                        remark='Save only',
-                                        rating=0,
-                                        edited=False,
-                                        step=None,
-                                        input_query=None,
-                                        combination_strategy=None,
-                                        combination_temperature=None
-                                    )
+                            # append to test_results
+                            new_result = pd.DataFrame([{
+                                'unique_id': saved_unique_id,
+                                'test_type': 'Individual',
+                                'prompt_name': saved_name,
+                                'system_prompt': suggested_prompt,
+                                'query': result.get('query', ''),
+                                'response': response_text,
+                                'status': status,
+                                'status_code': status_code,
+                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                'rating': 0,
+                                'remark': 'Saved and ran',
+                                'edited': False
+                            }])
+                            st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
 
-                                    last_index = st.session_state.test_results.index[-1]
-                                    if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
-                                        st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
+                        st.success(f"Saved and ran suggested prompt: {saved_name}")
 
-                                    st.session_state.response_ratings[saved_unique_id] = 0
-                                    st.session_state.prompts.append(st.session_state[f"suggested_prompt_{i}"])
-                                    st.session_state.prompt_names.append(prompt_name.strip())
-                                    del st.session_state[f"suggested_prompt_{i}"]
-                                    del st.session_state[f"suggested_prompt_name_{i}"]
-                                    st.success(f"Saved as new prompt: {prompt_name.strip()}")
-                                    st.rerun()
-                                else:
-                                    st.error("Please provide a prompt name")
+                        # show immediate response and rating slider
+                        st.write("**Response from Suggested Prompt:**")
+                        st.text_area("Response:", value=response_text or "", height=150, key=f"suggested_run_resp_{i}")
+                        rating_val = st.slider(
+                            "Rate this response (0-10):",
+                            min_value=0,
+                            max_value=10,
+                            value=0,
+                            key=f"rating_suggested_{i}"
+                        )
+                        if rating_val != 0:
+                            st.session_state.response_ratings[saved_unique_id] = rating_val
+                            # Update the new row, but since it's appended, we need to find its index
+                            new_index = st.session_state.test_results.index[-1]
+                            st.session_state.test_results.at[new_index, 'rating'] = rating_val
+                            export_mask = st.session_state.export_data['unique_id'] == saved_unique_id
+                            st.session_state.export_data.loc[export_mask, 'rating'] = rating_val
+                            st.rerun()
 
-                        with col_save_run:
-                            run_prompt_name = st.text_input(
-                                "Prompt Name:",
-                                value=st.session_state[f"suggested_prompt_name_{i}"],
-                                key=f"suggest_run_name_{i}"
-                            )
-                            if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggest_{i}"):
-                                if run_prompt_name.strip():
-                                    st.session_state.prompts.append(st.session_state[f"suggested_prompt_{i}"])
-                                    st.session_state.prompt_names.append(run_prompt_name.strip())
+                        # clear suggestion state
+                        del st.session_state[f"suggested_prompt_{i}"]
+                        del st.session_state[f"suggested_prompt_name_{i}"]
+                        st.rerun()
 
-                                    with st.spinner("Running new prompt..."):
-                                        try:
-                                            run_result = call_api_func(
-                                                system_prompt=st.session_state[f"suggested_prompt_{i}"],
-                                                query=result['query'],  # Changed from query_text to query
-                                                body_template=body_template,
-                                                headers=headers,
-                                                response_path=response_path
-                                            )
-                                            response_text = run_result.get('response', None)
-                                            status = run_result.get('status', 'Failed')
-                                            status_code = str(run_result.get('status_code', 'N/A'))
-                                        except Exception as e:
-                                            st.error(f"Error running suggested prompt: {str(e)}")
-                                            response_text = f"Error: {str(e)}"
-                                            status = 'Failed'
-                                            status_code = 'N/A'
+            # details footer
+            st.write("**Details:**")
+            st.write(
+                f"Status Code: {result.get('status_code', 'N/A')} | "
+                f"Time: {result.get('timestamp', 'N/A')} | "
+                f"Rating: {st.session_state.response_ratings.get(unique_id, result.get('rating', 0))}/10"
+            )
 
-                                        export_row_dict = {
-                                            'test_type': 'Individual',
-                                            'prompt_name': run_prompt_name.strip(),
-                                            'system_prompt': st.session_state[f"suggested_prompt_{i}"],
-                                            'query': result['query'],
-                                            'response': response_text,
-                                            'status': status,
-                                            'status_code': status_code,
-                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            'rating': 0,
-                                            'remark': 'Saved and ran',
-                                            'edited': False,
-                                            'step': None,
-                                            'input_query': None,
-                                            'combination_strategy': None,
-                                            'combination_temperature': None,
-                                            'slider_weights': None
-                                        }
-
-                                        maybe_uid = save_export_entry(
-                                            prompt_name=run_prompt_name.strip(),
-                                            system_prompt=st.session_state[f"suggested_prompt_{i}"],
-                                            query=result['query'],
-                                            response=response_text,
-                                            mode='Individual',
-                                            remark='Saved and ran',
-                                            status=status,
-                                            status_code=status_code,
-                                            rating=0
-                                        )
-
-                                        generated_uid = f"Individual_{run_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
-                                        saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
-
-                                        add_result_row(
-                                            test_type='Individual',
-                                            prompt_name=run_prompt_name.strip(),
-                                            system_prompt=st.session_state[f"suggested_prompt_{i}"],
-                                            query=result['query'],
-                                            response=response_text,
-                                            status=status,
-                                            status_code=status_code,
-                                            remark='Saved and ran',
-                                            rating=0,
-                                            edited=False,
-                                            step=None,
-                                            input_query=None,
-                                            combination_strategy=None,
-                                            combination_temperature=None
-                                        )
-
-                                        last_index = st.session_state.test_results.index[-1]
-                                        if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
-                                            st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
-
-                                        st.session_state.response_ratings[saved_unique_id] = 0
-                                        del st.session_state[f"suggested_prompt_{i}"]
-                                        del st.session_state[f"suggested_prompt_name_{i}"]
-                                        st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
-                                        st.rerun()
-                                else:
-                                    st.error("Please provide a prompt name")
-
-                        with col_edit:
-                            if st.button("✏️ Edit", key=f"edit_suggest_{i}"):
-                                st.session_state[f"edit_suggest_{i}_active"] = True
-
-                            if st.session_state.get(f"edit_suggest_{i}_active", False):
-                                edited_suggestion = st.text_area(
-                                    "Edit Suggested Prompt:",
-                                    value=st.session_state[f"suggested_prompt_{i}"],
-                                    height=100,
-                                    key=f"edit_suggested_{i}"
-                                )
-                                edit_prompt_name = st.text_input(
-                                    "Prompt Name for Edited Prompt:",
-                                    value=st.session_state[f"suggested_prompt_name_{i}"],
-                                    key=f"edit_suggest_name_{i}"
-                                )
-                                if st.button("💾 Save Edited Prompt", key=f"save_edited_suggest_{i}"):
-                                    if edit_prompt_name.strip():
-                                        export_row_dict = {
-                                            'test_type': 'Individual',
-                                            'prompt_name': edit_prompt_name.strip(),
-                                            'system_prompt': edited_suggestion,
-                                            'query': result['query'],
-                                            'response': 'Prompt saved but not executed',
-                                            'status': 'Not Executed',
-                                            'status_code': 'N/A',
-                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            'rating': 0,
-                                            'remark': 'Save only',
-                                            'edited': False,
-                                            'step': None,
-                                            'input_query': None,
-                                            'combination_strategy': None,
-                                            'combination_temperature': None,
-                                            'slider_weights': None
-                                        }
-
-                                        maybe_uid = save_export_entry(
-                                            prompt_name=edit_prompt_name.strip(),
-                                            system_prompt=edited_suggestion,
-                                            query=result['query'],
-                                            response='Prompt saved but not executed',
-                                            mode='Individual',
-                                            remark='Save only',
-                                            status='Not Executed',
-                                            status_code='N/A',
-                                            rating=0
-                                        )
-
-                                        generated_uid = f"Individual_{edit_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
-                                        saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
-
-                                        add_result_row(
-                                            test_type='Individual',
-                                            prompt_name=edit_prompt_name.strip(),
-                                            system_prompt=edited_suggestion,
-                                            query=result['query'],
-                                            response='Prompt saved but not executed',
-                                            status='Not Executed',
-                                            status_code='N/A',
-                                            remark='Save only',
-                                            rating=0,
-                                            edited=False,
-                                            step=None,
-                                            input_query=None,
-                                            combination_strategy=None,
-                                            combination_temperature=None
-                                        )
-
-                                        last_index = st.session_state.test_results.index[-1]
-                                        if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
-                                            st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
-
-                                        st.session_state.response_ratings[saved_unique_id] = 0
-                                        st.session_state.prompts.append(edited_suggestion)
-                                        st.session_state.prompt_names.append(edit_prompt_name.strip())
-                                        st.session_state[f"edit_suggest_{i}_active"] = False
-                                        del st.session_state[f"suggested_prompt_{i}"]
-                                        del st.session_state[f"suggested_prompt_name_{i}"]
-                                        st.success(f"Saved edited prompt as: {edit_prompt_name.strip()}")
-                                        st.rerun()
-                                    else:
-                                        st.error("Please provide a prompt name")
-
-                    st.write("**Details:**")
-                    st.write(
-                        f"Status Code: {result['status_code']} | "
-                        f"Time: {result['timestamp']} | "
-                        f"Rating: {st.session_state.response_ratings.get(unique_id, result.get('rating', 0))}/10 "
-                        f"({st.session_state.response_ratings.get(unique_id, result.get('rating', 0))*10}%)"
-                    )
+    # Note: export preview table is managed by app.export.render_export_section()
+    # We intentionally do NOT render another dataframe here to avoid duplication.
