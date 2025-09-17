@@ -802,7 +802,7 @@ Return only the combined system prompt without additional explanation.
                                         mode='Combination_Individual',
                                         remark='Save only',
                                         status='Not Executed',
-                                        status_code='N/A',
+                                        status_code= str(result.get('status_code', 'N/A')),
                                         combination_strategy=st.session_state.combination_results.get('strategy'),
                                         combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
                                         slider_weights=st.session_state.combination_results.get('slider_weights'),

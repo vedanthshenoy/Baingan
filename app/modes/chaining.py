@@ -34,7 +34,8 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             if col not in st.session_state.test_results.columns:
                 st.session_state.test_results[col] = None
         # keep rating column consistent
-        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
+        # st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
+        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].infer_objects(copy=False).fillna(0).astype(int)
         st.session_state.test_results = st.session_state.test_results[
             st.session_state.test_results['response'].notnull() &
             st.session_state.test_results['status'].notnull()
