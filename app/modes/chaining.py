@@ -4,12 +4,18 @@ import pandas as pd
 from datetime import datetime
 import uuid
 import time
+import os
+from dotenv import load_dotenv
 from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
 from app.utils import add_result_row
 from app.export import save_export_entry
 
-def render_prompt_chaining(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func, gemini_api_key=''):
+# Load environment variables
+load_dotenv()
+gemini_api_key = os.getenv('GEMINI_API_KEY')
+
+def render_prompt_chaining(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func):
     st.header("🔗 Prompt Chaining Testing")
 
     # Initialize export_data if missing
@@ -60,10 +66,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
 
         return uid
 
-    # Debug: Log gemini_api_key and api_url
-    st.write(f"Debug: Gemini API Key available: {bool(gemini_api_key)}")
-    st.write(f"Debug: API URL: {api_url}")
-
     # Test All Prompts in Chain
     if st.button("🚀 Test Chained Prompts", type="primary", disabled=not (api_url and st.session_state.get('prompts') and query_text)):
         if not api_url:
@@ -80,14 +82,14 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
-                # Debug: Log prompts and names
-                st.write(f"Debug: Prompts={st.session_state.prompts}, Names={st.session_state.prompt_names}")
-                st.write(f"Debug: Prompt count={len(st.session_state.prompts)}, Unique prompts={len(set(st.session_state.prompts))}")
-
                 current_query = query_text  # Start with initial query
                 for i, (system_prompt, prompt_name) in enumerate(zip(st.session_state.prompts, st.session_state.prompt_names)):
-                    status_text.text(f"Testing {prompt_name} (Step {i+1}/{total_prompts})...")
-                    st.write(f"Debug: Testing Prompt '{prompt_name}' with query '{current_query}'")
+                    # Name intermediate steps
+                    step_name = f"intermediate_result_after_prompt_{prompt_name if prompt_name else i+1}"
+                    if i == total_prompts - 1:  # Final step
+                        step_name = "final_step"
+                    
+                    status_text.text(f"Testing {step_name} (Step {i+1}/{total_prompts})...")
 
                     try:
                         result = call_api_func(
@@ -101,16 +103,14 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         status = result.get('status', 'Failed')
                         status_code = str(result.get('status_code', 'N/A'))
                     except Exception as e:
-                        st.error(f"Error in API call for {prompt_name}: {str(e)}")
+                        st.error(f"Error in API call for {step_name}: {str(e)}")
                         response_text = f"Error: {str(e)}"
                         status = 'Failed'
                         status_code = 'N/A'
 
-                    st.write(f"Debug: Result for '{prompt_name}': status={status}, status_code={status_code}, response={response_text[:50] if response_text else 'None'}...")
-
                     export_row_dict = {
                         'test_type': 'Chaining',
-                        'prompt_name': prompt_name,
+                        'prompt_name': step_name,
                         'system_prompt': system_prompt,
                         'query': current_query,
                         'response': response_text,
@@ -128,7 +128,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     }
 
                     maybe_uid = save_export_entry(
-                        prompt_name=prompt_name,
+                        prompt_name=step_name,
                         system_prompt=system_prompt,
                         query=current_query,
                         response=response_text,
@@ -141,12 +141,12 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         input_query=query_text
                     )
 
-                    generated_uid = f"Chaining_{prompt_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                    generated_uid = f"Chaining_{step_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
                     unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
 
                     add_result_row(
                         test_type='Chaining',
-                        prompt_name=prompt_name,
+                        prompt_name=step_name,
                         system_prompt=system_prompt,
                         query=current_query,
                         response=response_text,
