@@ -2,16 +2,71 @@ import streamlit as st
 import google.generativeai as genai
 from datetime import datetime
 import pandas as pd
+import uuid
+import time
 from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
+from app.utils import add_result_row
 from app.export import save_export_entry
 
-def render_prompt_combination(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func, gemini_api_key):
+def render_prompt_combination(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func, gemini_api_key=''):
     st.header("🤝 Prompt Combination")
-    
+
+    # Initialize export_data if missing
+    if 'export_data' not in st.session_state or not isinstance(st.session_state.export_data, pd.DataFrame):
+        st.session_state.export_data = pd.DataFrame(columns=[
+            'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
+            'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query',
+            'combination_strategy', 'combination_temperature', 'slider_weights',
+            'rating', 'remark'
+        ])
+
+    # Session state cleanup
+    if 'response_ratings' not in st.session_state:
+        st.session_state.response_ratings = {}
+    if 'test_results' in st.session_state and isinstance(st.session_state.test_results, pd.DataFrame):
+        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
+        st.session_state.test_results = st.session_state.test_results[
+            st.session_state.test_results['response'].notnull() & st.session_state.test_results['status'].notnull()
+        ].reset_index(drop=True)
+
+    # Helper to normalize uid
+    def normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=None):
+        if isinstance(maybe_uid, str) and maybe_uid:
+            uid = maybe_uid
+        else:
+            uid = generated_uid or f"Combination_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4()}"
+
+        try:
+            exists = uid in st.session_state.export_data.get('unique_id', pd.Series(dtype="object")).values
+        except Exception:
+            exists = False
+
+        if not exists:
+            row = export_row_dict.copy()
+            row['unique_id'] = uid
+            if 'timestamp' not in row:
+                row['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for col in st.session_state.export_data.columns:
+                if col not in row:
+                    row[col] = None
+            st.session_state.export_data = pd.concat([st.session_state.export_data, pd.DataFrame([row])], ignore_index=True)
+
+        if uid not in st.session_state.response_ratings:
+            if generated_uid and generated_uid in st.session_state.response_ratings:
+                st.session_state.response_ratings[uid] = st.session_state.response_ratings.pop(generated_uid)
+            else:
+                st.session_state.response_ratings[uid] = export_row_dict.get('rating', 0) or 0
+
+        return uid
+
+    # Debug: Log gemini_api_key and api_url
+    st.write(f"Debug: Gemini API Key available: {bool(gemini_api_key)}")
+    st.write(f"Debug: API URL: {api_url}")
+
     if not gemini_api_key:
         st.warning("⚠️ Please configure Gemini API key to use prompt combination")
-    
+
     temperature = st.slider(
         "🌡️ AI Temperature (Creativity)",
         min_value=0,
@@ -20,10 +75,10 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
         help="Controls creativity of AI responses. Lower = more focused, Higher = more creative"
     )
     st.session_state.temperature = temperature
-    
+
     selected_prompts = []
-    
-    if st.session_state.prompts:
+
+    if st.session_state.get('prompts'):
         ensure_prompt_names()
         selected_prompts = st.multiselect(
             "Choose prompts to combine:",
@@ -31,17 +86,17 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
             format_func=lambda x: f"{st.session_state.prompt_names[x]}: {st.session_state.prompts[x][:50]}...",
             default=list(range(min(2, len(st.session_state.prompts))))
         )
-        
+
         if selected_prompts != st.session_state.get('last_selected_prompts', []):
             st.session_state.slider_weights = {}
             st.session_state.last_selected_prompts = selected_prompts
-        
+
         if selected_prompts:
             st.subheader("Selected Prompts Preview")
             for idx in selected_prompts:
                 with st.expander(f"{st.session_state.prompt_names[idx]}"):
                     st.text(st.session_state.prompts[idx])
-            
+
             combination_strategy = st.selectbox(
                 "Combination Strategy:",
                 [
@@ -52,19 +107,19 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
                     "Slider - Custom influence weights"
                 ]
             )
-            
+
             if combination_strategy == "Slider - Custom influence weights":
                 st.subheader("🎚️ Influence Weights")
                 st.write("Set how much influence each prompt should have (0-100%, auto-adjusted to sum to 100%):")
-                
-                if not st.session_state.slider_weights or len(st.session_state.slider_weights) != len(selected_prompts):
+
+                if not st.session_state.get('slider_weights') or len(st.session_state.slider_weights) != len(selected_prompts):
                     default_weight = 100 // max(1, len(selected_prompts))
                     st.session_state.slider_weights = {idx: default_weight for idx in selected_prompts}
                     if selected_prompts:
                         total = sum(st.session_state.slider_weights.values())
                         if total != 100:
                             st.session_state.slider_weights[selected_prompts[-1]] = 100 - sum(st.session_state.slider_weights.get(i, 0) for i in selected_prompts[:-1])
-                
+
                 for idx in selected_prompts:
                     def update_weights(changed_idx):
                         new_value = st.session_state[f"weight_{changed_idx}"]
@@ -83,10 +138,10 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
                                     total_new = sum(st.session_state.slider_weights.get(i, 0) for i in selected_prompts)
                                     if total_new != 100:
                                         st.session_state.slider_weights[other_indices[-1]] += 100 - total_new
-                    
+
                     weight = st.session_state.slider_weights.get(idx, 100 // max(1, len(selected_prompts)))
                     st.session_state.slider_weights[idx] = weight
-                    
+
                     st.slider(
                         f"{st.session_state.prompt_names[idx]}:",
                         min_value=0,
@@ -96,15 +151,22 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
                         on_change=update_weights,
                         args=(idx,)
                     )
-                
+
                 total_weight = sum(st.session_state.slider_weights.get(idx, 0) for idx in selected_prompts)
                 st.write(f"**Total Weight:** {total_weight}%")
                 if total_weight != 100:
                     st.warning("Weights adjusted to sum to 100%")
     else:
         st.info("Add system prompts first to combine them")
-    
-    # Combined button to combine and then test
+
+    # Placeholder for combined prompt
+    combined_prompt_container = st.container()
+    # Placeholder for individual results
+    individual_results_container = st.container()
+    # Placeholder for combined result
+    combined_result_container = st.container()
+
+    # Combined button to combine and test
     if st.button("🧪 Combine and Test Prompts", type="primary", disabled=not (gemini_api_key and selected_prompts and api_url and query_text)):
         if not gemini_api_key:
             st.error("Please configure Gemini API key")
@@ -116,22 +178,19 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
             st.error("Please configure API endpoint and enter a query")
         else:
             # Step 1: Combine Prompts
-            try:
-                genai.configure(api_key=gemini_api_key)
-                gemini_temperature = (temperature / 100.0) * 2.0
-                
-                model = genai.GenerativeModel('gemini-2.0-flash-exp')
-                
-                selected_prompt_texts = [st.session_state.prompts[i] for i in selected_prompts]
-                selected_prompt_names = [st.session_state.prompt_names[i] for i in selected_prompts]
-                
-                if combination_strategy == "Slider - Custom influence weights":
-                    total_weight = sum(st.session_state.slider_weights.get(idx, 0) for idx in selected_prompts)
-                    normalized_weights = {k: (v/total_weight)*100 for k, v in st.session_state.slider_weights.items() if k in selected_prompts}
-                    
-                    weight_info = "\n".join([f"{st.session_state.prompt_names[idx]} ({normalized_weights.get(idx, 0):.1f}% influence): {st.session_state.prompts[idx]}" for idx in selected_prompts])
-                    
-                    combination_prompt = f"""
+            with st.spinner("AI is combining prompts..."):
+                try:
+                    genai.configure(api_key=gemini_api_key)
+                    gemini_temperature = (temperature / 100.0) * 2.0
+                    model = genai.GenerativeModel('gemini-2.5-flash')
+                    selected_prompt_texts = [st.session_state.prompts[i] for i in selected_prompts]
+                    selected_prompt_names = [st.session_state.prompt_names[i] for i in selected_prompts]
+
+                    if combination_strategy == "Slider - Custom influence weights":
+                        total_weight = sum(st.session_state.slider_weights.get(idx, 0) for idx in selected_prompts)
+                        normalized_weights = {k: (v/total_weight)*100 for k, v in st.session_state.slider_weights.items() if k in selected_prompts}
+                        weight_info = "\n".join([f"{st.session_state.prompt_names[idx]} ({normalized_weights.get(idx, 0):.1f}% influence): {st.session_state.prompts[idx]}" for idx in selected_prompts])
+                        combination_prompt = f"""
 Please combine the following system prompts into one optimized prompt, using the specified influence weights to determine how much each prompt should contribute to the final result.
 
 Weighted Prompts:
@@ -147,10 +206,9 @@ Requirements:
 
 Return only the combined system prompt without additional explanation.
 """
-                else:
-                    prompt_info = "\n".join([f'{name}: {prompt}' for name, prompt in zip(selected_prompt_names, selected_prompt_texts)])
-                    
-                    combination_prompt = f"""
+                    else:
+                        prompt_info = "\n".join([f'{name}: {prompt}' for name, prompt in zip(selected_prompt_names, selected_prompt_texts)])
+                        combination_prompt = f"""
 Please combine the following system prompts into one optimized, coherent system prompt.
 
 Strategy: {combination_strategy}
@@ -167,15 +225,12 @@ Requirements:
 
 Return only the combined system prompt without additional explanation.
 """
-                
-                generation_config = genai.types.GenerationConfig(
-                    temperature=gemini_temperature
-                )
-                
-                with st.spinner("AI is combining prompts..."):
+
+                    generation_config = genai.types.GenerationConfig(temperature=gemini_temperature)
                     response = model.generate_content(combination_prompt, generation_config=generation_config)
                     combined_prompt = response.text
-                    
+
+                    # Initialize combination_results
                     st.session_state.combination_results = {
                         'individual_prompts': selected_prompt_texts,
                         'individual_names': selected_prompt_names,
@@ -190,271 +245,486 @@ Return only the combined system prompt without additional explanation.
                     }
                     st.session_state.suggested_prompt = None
                     st.session_state.suggested_prompt_name = None
-                    
-                    st.success("✅ Prompts combined successfully!")
-                    
-            except Exception as e:
-                st.error(f"Error combining prompts: {str(e)}")
-                return # Exit if combine fails
-            
-            # Step 2: Run Tests
-            if 'test_results' not in st.session_state or not isinstance(st.session_state.test_results, pd.DataFrame):
-                st.session_state.test_results = pd.DataFrame(columns=[
-                    'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 
-                    'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
-                ])
 
-            if 'response_ratings' not in st.session_state:
-                st.session_state.response_ratings = {}
+                    # Display combined prompt immediately
+                    with combined_prompt_container:
+                        st.subheader("Combined Prompt (Preview)")
+                        st.markdown(f"**Generated Combined Prompt:**\n\n> {combined_prompt}")
+                        st.success("✅ Prompts combined successfully!")
 
-            with st.spinner("Testing individual prompts..."):
+                except Exception as e:
+                    st.error(f"Error combining prompts: {str(e)}")
+                    return
+
+            # Step 2: Test Individual Prompts
+            with individual_results_container:
+                st.subheader("Individual Results")
                 individual_results = []
                 for i, (prompt, name) in enumerate(zip(st.session_state.combination_results['individual_prompts'], st.session_state.combination_results['individual_names'])):
-                    result = call_api_func(prompt, query_text, body_template, headers, response_path)
-                    unique_id = save_export_entry(
-                        prompt_name=name,
-                        system_prompt=prompt,
-                        query=query_text,
-                        response=result['response'] if 'response' in result else None,
-                        mode="Combination_Individual",
-                        remark="Saved and ran",
-                        status=result['status'],
-                        status_code=result.get('status_code', 'N/A'),
-                        combination_strategy=st.session_state.combination_results.get('strategy'),
-                        combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
-                        slider_weights=st.session_state.combination_results.get('slider_weights'),
-                        rating=0
-                    )
-                    st.session_state.response_ratings[unique_id] = 0
-                    new_result = pd.DataFrame([{
-                        'unique_id': unique_id,
-                        'prompt_name': name,
-                        'system_prompt': prompt,
+                    with st.spinner(f"Testing prompt '{name}'..."):
+                        st.write(f"Debug: Testing Prompt '{name}' with query '{query_text}'")
+                        try:
+                            result = call_api_func(
+                                system_prompt=prompt,
+                                query=query_text,
+                                body_template=body_template,
+                                headers=headers,
+                                response_path=response_path
+                            )
+                            response_text = result.get('response', None)
+                            status = result.get('status', 'Failed')
+                            status_code = str(result.get('status_code', 'N/A'))
+                        except Exception as e:
+                            st.error(f"Error in API call for {name}: {str(e)}")
+                            response_text = f"Error: {str(e)}"
+                            status = 'Failed'
+                            status_code = 'N/A'
+
+                        st.write(f"Debug: Result for '{name}': status={status}, status_code={status_code}, response={response_text[:50] if response_text else 'None'}...")
+
+                        export_row_dict = {
+                            'test_type': 'Combination_Individual',
+                            'prompt_name': name,
+                            'system_prompt': prompt,
+                            'query': query_text,
+                            'response': response_text,
+                            'status': status,
+                            'status_code': status_code,
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'rating': 0,
+                            'remark': 'Saved and ran',
+                            'edited': False,
+                            'step': i + 1,
+                            'input_query': query_text,
+                            'combination_strategy': st.session_state.combination_results.get('strategy'),
+                            'combination_temperature': temperature,
+                            'slider_weights': st.session_state.combination_results.get('slider_weights')
+                        }
+
+                        maybe_uid = save_export_entry(
+                            prompt_name=name,
+                            system_prompt=prompt,
+                            query=query_text,
+                            response=response_text,
+                            mode="Combination_Individual",
+                            remark="Saved and ran",
+                            status=status,
+                            status_code=status_code,
+                            combination_strategy=st.session_state.combination_results.get('strategy'),
+                            combination_temperature=temperature,
+                            slider_weights=st.session_state.combination_results.get('slider_weights'),
+                            rating=0,
+                            step=i + 1,
+                            input_query=query_text
+                        )
+
+                        generated_uid = f"Combination_{name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                        unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
+
+                        add_result_row(
+                            test_type='Combination_Individual',
+                            prompt_name=name,
+                            system_prompt=prompt,
+                            query=query_text,
+                            response=response_text,
+                            status=status,
+                            status_code=status_code,
+                            remark='Saved and ran',
+                            rating=0,
+                            edited=False,
+                            step=i + 1,
+                            input_query=query_text,
+                            combination_strategy=st.session_state.combination_results.get('strategy'),
+                            combination_temperature=temperature,
+                            slider_weights=st.session_state.combination_results.get('slider_weights')
+                        )
+
+                        last_index = st.session_state.test_results.index[-1]
+                        st.session_state.test_results.at[last_index, 'unique_id'] = unique_id
+                        st.session_state.response_ratings[unique_id] = 0
+                        result['unique_id'] = unique_id
+                        individual_results.append(result)
+
+                        # Display individual result immediately
+                        with st.expander(f"**Individual: {name}**"):
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.markdown(f"**Query:**\n\n> {query_text}")
+                                st.markdown(f"**System Prompt:**\n\n> {prompt}")
+                                st.text_area(
+                                    "Response (editable):",
+                                    value=response_text or "",
+                                    key=f"edit_individual_response_{unique_id}",
+                                    height=150
+                                )
+                            with col2:
+                                st.slider(
+                                    "Rating",
+                                    min_value=0,
+                                    max_value=10,
+                                    value=0,
+                                    key=f"rating_individual_{unique_id}_{i}"
+                                )
+                                st.write(f"**Status Code:** {status_code}")
+                                st.write(f"**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                                st.write(f"**Step:** {i + 1}")
+
+                        # Conditional delay to avoid rate-limiting
+                        if i < len(st.session_state.combination_results['individual_prompts']) - 1:
+                            time.sleep(0.5)  # Reduced delay, adjust based on API behavior
+
+                st.session_state.combination_results['individual_results'] = individual_results
+
+            # Step 3: Test Combined Prompt
+            with combined_result_container:
+                st.subheader("Combined Result")
+                with st.spinner("Testing combined prompt..."):
+                    st.write(f"Debug: Testing Combined Prompt with query '{query_text}'")
+                    try:
+                        combined_result = call_api_func(
+                            system_prompt=st.session_state.combination_results['combined_prompt'],
+                            query=query_text,
+                            body_template=body_template,
+                            headers=headers,
+                            response_path=response_path
+                        )
+                        combined_response_text = combined_result.get('response', None)
+                        combined_status = combined_result.get('status', 'Failed')
+                        combined_status_code = str(combined_result.get('status_code', 'N/A'))
+                    except Exception as e:
+                        st.error(f"Error in API call for combined prompt: {str(e)}")
+                        combined_response_text = f"Error: {str(e)}"
+                        combined_status = 'Failed'
+                        combined_status_code = 'N/A'
+
+                    st.write(f"Debug: Result for Combined Prompt: status={combined_status}, status_code={combined_status_code}, response={combined_response_text[:50] if combined_response_text else 'None'}...")
+
+                    export_row_dict = {
+                        'test_type': 'Combination_Combined',
+                        'prompt_name': 'AI_Combined',
+                        'system_prompt': st.session_state.combination_results['combined_prompt'],
                         'query': query_text,
-                        'response': result['response'] if 'response' in result else None,
-                        'status': result['status'],
-                        'status_code': str(result.get('status_code', 'N/A')),
+                        'response': combined_response_text,
+                        'status': combined_status,
+                        'status_code': combined_status_code,
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'edited': False,
+                        'rating': 0,
                         'remark': 'Saved and ran',
-                        'rating': 0
-                    }])
-                    st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
-                    individual_results.append(new_result.to_dict('records')[0])
-            
-            with st.spinner("Testing combined prompt..."):
-                combined_result = call_api_func(st.session_state.combination_results['combined_prompt'], query_text, body_template, headers, response_path)
-                unique_id = save_export_entry(
-                    prompt_name="AI_Combined",
-                    system_prompt=st.session_state.combination_results['combined_prompt'],
-                    query=query_text,
-                    response=combined_result['response'] if 'response' in combined_result else None,
-                    mode="Combination_Combined",
-                    remark="Saved and ran",
-                    status=combined_result['status'],
-                    status_code=combined_result.get('status_code', 'N/A'),
-                    combination_strategy=st.session_state.combination_results.get('strategy'),
-                    combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
-                    slider_weights=st.session_state.combination_results.get('slider_weights'),
-                    rating=0
-                )
-                st.session_state.response_ratings[unique_id] = 0
-                new_combined_result = pd.DataFrame([{
-                    'unique_id': unique_id,
-                    'prompt_name': "AI_Combined",
-                    'system_prompt': st.session_state.combination_results['combined_prompt'],
-                    'query': query_text,
-                    'response': combined_result['response'] if 'response' in combined_result else None,
-                    'status': combined_result['status'],
-                    'status_code': str(combined_result.get('status_code', 'N/A')),
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'edited': False,
-                    'remark': 'Saved and ran',
-                    'rating': 0
-                }])
-                st.session_state.test_results = pd.concat([st.session_state.test_results, new_combined_result], ignore_index=True)
-            
-            st.session_state.combination_results['individual_results'] = individual_results
-            st.session_state.combination_results['combined_result'] = new_combined_result.to_dict('records')[0]
-            
-            st.success("✅ Testing completed!")
+                        'edited': False,
+                        'step': None,
+                        'input_query': query_text,
+                        'combination_strategy': st.session_state.combination_results.get('strategy'),
+                        'combination_temperature': temperature,
+                        'slider_weights': st.session_state.combination_results.get('slider_weights')
+                    }
 
+                    maybe_uid = save_export_entry(
+                        prompt_name='AI_Combined',
+                        system_prompt=st.session_state.combination_results['combined_prompt'],
+                        query=query_text,
+                        response=combined_response_text,
+                        mode="Combination_Combined",
+                        remark="Saved and ran",
+                        status=combined_status,
+                        status_code=combined_status_code,
+                        combination_strategy=st.session_state.combination_results.get('strategy'),
+                        combination_temperature=temperature,
+                        slider_weights=st.session_state.combination_results.get('slider_weights'),
+                        rating=0,
+                        step=None,
+                        input_query=query_text
+                    )
+
+                    generated_uid = f"Combination_Combined_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                    combined_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
+
+                    add_result_row(
+                        test_type='Combination_Combined',
+                        prompt_name='AI_Combined',
+                        system_prompt=st.session_state.combination_results['combined_prompt'],
+                        query=query_text,
+                        response=combined_response_text,
+                        status=combined_status,
+                        status_code=combined_status_code,
+                        remark='Saved and ran',
+                        rating=0,
+                        edited=False,
+                        step=None,
+                        input_query=query_text,
+                        combination_strategy=st.session_state.combination_results.get('strategy'),
+                        combination_temperature=temperature,
+                        slider_weights=st.session_state.combination_results.get('slider_weights')
+                    )
+
+                    last_index = st.session_state.test_results.index[-1]
+                    st.session_state.test_results.at[last_index, 'unique_id'] = combined_unique_id
+                    st.session_state.response_ratings[combined_unique_id] = 0
+                    combined_result['unique_id'] = combined_unique_id
+                    st.session_state.combination_results['combined_result'] = combined_result
+
+                    # Display combined result
+                    with st.expander("**Combined Prompt**"):
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.markdown(f"**Query:**\n\n> {query_text}")
+                            st.markdown(f"**System Prompt:**\n\n> {st.session_state.combination_results['combined_prompt']}")
+                            st.text_area(
+                                "Response (editable):",
+                                value=combined_response_text or "",
+                                key=f"edit_combined_response_{combined_unique_id}",
+                                height=150
+                            )
+                        with col2:
+                            st.slider(
+                                "Rating",
+                                min_value=0,
+                                max_value=10,
+                                value=0,
+                                key=f"rating_combined_{combined_unique_id}"
+                            )
+                            st.write(f"**Status Code:** {combined_status_code}")
+                            st.write(f"**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+                    st.success("✅ Tests completed!")
+
+    # Display Existing Results
     if st.session_state.get('combination_results'):
-        st.subheader("🎯 Combination Results")
-        
-        st.subheader("🤖 AI-Generated Combined Prompt")
-        combined_prompt_text = st.text_area(
-            "Combined Prompt (editable):",
-            value=st.session_state.combination_results['combined_prompt'],
-            height=200,
-            key="edit_combined_prompt"
-        )
-        
-        if combined_prompt_text != st.session_state.combination_results['combined_prompt']:
-            if st.button("💾 Save Combined Prompt"):
-                st.session_state.combination_results['combined_prompt'] = combined_prompt_text
-                if st.session_state.combination_results.get('combined_result'):
-                    st.session_state.combination_results['combined_result']['system_prompt'] = combined_prompt_text
-                    st.session_state.combination_results['combined_result']['edited'] = True
-                    
-                    # Find and update the row in both DataFrames directly
-                    unique_id = st.session_state.combination_results['combined_result']['unique_id']
-                    if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                        export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
-                        if not export_row_index.empty:
-                            st.session_state.export_data.loc[export_row_index, 'system_prompt'] = combined_prompt_text
-                            st.session_state.export_data.loc[export_row_index, 'edited'] = True
-                            st.session_state.export_data.loc[export_row_index, 'remark'] = "Edited and saved"
-                    
-                    if 'test_results' in st.session_state and not st.session_state.test_results.empty:
-                        test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
-                        if not test_row_index.empty:
-                            st.session_state.test_results.loc[test_row_index, 'system_prompt'] = combined_prompt_text
-                            st.session_state.test_results.loc[test_row_index, 'edited'] = True
-                            st.session_state.test_results.loc[test_row_index, 'remark'] = "Edited and saved"
+        with individual_results_container:
+            st.subheader("Individual Results")
+            if st.session_state.combination_results.get('individual_results'):
+                for i, individual_result in enumerate(st.session_state.combination_results['individual_results']):
+                    prompt_name = st.session_state.combination_results['individual_names'][i]
+                    matching_rows = st.session_state.test_results[
+                        (st.session_state.test_results['test_type'] == 'Combination_Individual') &
+                        (st.session_state.test_results['prompt_name'] == prompt_name) &
+                        (st.session_state.test_results['timestamp'] == st.session_state.combination_results['timestamp'])
+                    ]
+                    unique_id = matching_rows['unique_id'].iloc[0] if not matching_rows.empty else f"fallback_{i}_{uuid.uuid4()}"
+                    st.write(f"Debug: Displaying result for '{prompt_name}', unique_id={unique_id}")
 
-                st.success("Combined prompt updated!")
-                st.rerun()
-        
-        st.write(f"**Strategy:** {st.session_state.combination_results.get('strategy')}")
-        st.write(f"**Temperature:** {st.session_state.combination_results.get('temperature', 50)}%")
-        
-        if st.session_state.combination_results.get('slider_weights'):
-            st.write("**Influence Weights Used:**")
-            for idx, weight in st.session_state.combination_results['slider_weights'].items():
-                if idx in st.session_state.combination_results['selected_indices']:
-                    name = st.session_state.combination_results['individual_names'][st.session_state.combination_results['selected_indices'].index(idx)]
-                    st.write(f"- {name}: {weight}%")
-        
-        if st.session_state.combination_results.get('individual_results') and st.session_state.combination_results.get('combined_result'):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("📄 Individual Prompt Results")
-                for j, result in enumerate(st.session_state.combination_results['individual_results']):
-                    status_color = "🟢" if result['status'] == 'Success' else "🔴"
-                    with st.expander(f"{status_color} {result['prompt_name']}"):
-                        edited_individual_response = st.text_area(
-                            "Response (editable):", 
-                            value=result['response'], 
-                            height=150, 
-                            key=f"edit_individual_{j}"
-                        )
+                    with st.expander(f"**Individual: {prompt_name}**"):
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.markdown(f"**Query:**\n\n> {query_text}")
+                            st.markdown(f"**System Prompt:**\n\n> {st.session_state.combination_results['individual_prompts'][i]}")
+                            edited_individual_response = st.text_area(
+                                "Response (editable):",
+                                value=individual_result.get('response', ""),
+                                key=f"edit_individual_response_{unique_id}",
+                                height=150
+                            )
+                            if edited_individual_response != (individual_result.get('response', "") or ""):
+                                if st.button("💾 Save Edited Response", key=f"save_individual_response_{unique_id}"):
+                                    export_row_dict = {
+                                        'test_type': 'Combination_Individual',
+                                        'prompt_name': prompt_name,
+                                        'system_prompt': st.session_state.combination_results['individual_prompts'][i],
+                                        'query': query_text,
+                                        'response': edited_individual_response,
+                                        'status': individual_result.get('status', 'Failed'),
+                                        'status_code': str(individual_result.get('status_code', 'N/A')),
+                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        'rating': st.session_state.response_ratings.get(unique_id, 0),
+                                        'remark': 'Edited response',
+                                        'edited': True,
+                                        'step': i + 1,
+                                        'input_query': query_text,
+                                        'combination_strategy': st.session_state.combination_results.get('strategy'),
+                                        'combination_temperature': temperature,
+                                        'slider_weights': st.session_state.combination_results.get('slider_weights')
+                                    }
 
-                        unique_id = result['unique_id']
-                        rating_key = f"rating_{unique_id}"
-                        current_rating = st.session_state.response_ratings.get(unique_id, int(result.get('rating', 0) or 0))
-                        new_rating = st.slider(
-                            "Rate this response (0-10):",
-                            min_value=0,
-                            max_value=10,
-                            value=int(current_rating),
-                            key=rating_key
-                        )
+                                    maybe_uid = save_export_entry(
+                                        prompt_name=prompt_name,
+                                        system_prompt=st.session_state.combination_results['individual_prompts'][i],
+                                        query=query_text,
+                                        response=edited_individual_response,
+                                        mode="Combination_Individual",
+                                        remark="Edited response",
+                                        status=individual_result.get('status', 'Failed'),
+                                        status_code=str(individual_result.get('status_code', 'N/A')),
+                                        combination_strategy=st.session_state.combination_results.get('strategy'),
+                                        combination_temperature=temperature,
+                                        slider_weights=st.session_state.combination_results.get('slider_weights'),
+                                        rating=st.session_state.response_ratings.get(unique_id, 0),
+                                        step=i + 1,
+                                        input_query=query_text
+                                    )
 
-                        if new_rating != current_rating:
-                            st.session_state.response_ratings[unique_id] = new_rating
-                            
-                            # Find and update the rows in both DataFrames directly
-                            if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                                export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
-                                if not export_row_index.empty:
-                                    st.session_state.export_data.loc[export_row_index, 'rating'] = new_rating
-                                    st.session_state.export_data.loc[export_row_index, 'edited'] = True
-                                    st.session_state.export_data.loc[export_row_index, 'remark'] = 'Rating updated'
-                            
-                            if 'test_results' in st.session_state and not st.session_state.test_results.empty:
-                                test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
-                                if not test_row_index.empty:
-                                    st.session_state.test_results.loc[test_row_index, 'rating'] = new_rating
-                                    st.session_state.test_results.loc[test_row_index, 'edited'] = True
-                                    st.session_state.test_results.loc[test_row_index, 'remark'] = 'Rating updated'
-                            
-                            st.session_state.combination_results['individual_results'][j]['rating'] = new_rating
-                            st.session_state.combination_results['individual_results'][j]['edited'] = True
-                            st.rerun()
-
-                        if edited_individual_response != result['response']:
-                            col_save, col_reverse = st.columns(2)
-                            with col_save:
-                                if st.button(f"💾 Save Response", key=f"save_individual_{j}"):
-                                    st.session_state.combination_results['individual_results'][j]['response'] = edited_individual_response
-                                    st.session_state.combination_results['individual_results'][j]['edited'] = True
-                                    
-                                    # Find and update the rows in both DataFrames directly
-                                    if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                                        export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
-                                        if not export_row_index.empty:
-                                            st.session_state.export_data.loc[export_row_index, 'response'] = edited_individual_response
-                                            st.session_state.export_data.loc[export_row_index, 'edited'] = True
-                                            st.session_state.export_data.loc[export_row_index, 'remark'] = 'Edited and saved'
-                                    
-                                    if 'test_results' in st.session_state and not st.session_state.test_results.empty:
-                                        test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
-                                        if not test_row_index.empty:
-                                            st.session_state.test_results.loc[test_row_index, 'response'] = edited_individual_response
-                                            st.session_state.test_results.loc[test_row_index, 'edited'] = True
-                                            st.session_state.test_results.loc[test_row_index, 'remark'] = 'Edited and saved'
-                                            
+                                    saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=unique_id)
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'response'] = edited_individual_response
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark'] = 'Edited response'
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
+                                    st.session_state.response_ratings[saved_unique_id] = st.session_state.response_ratings.pop(unique_id, 0)
+                                    individual_result.update({
+                                        'response': edited_individual_response,
+                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        'unique_id': saved_unique_id
+                                    })
+                                    st.session_state.combination_results['individual_results'][i] = individual_result
                                     st.success("Response updated!")
                                     st.rerun()
-                            with col_reverse:
-                                if st.button(f"🔄 Reverse Prompt", key=f"reverse_individual_{j}"):
-                                    with st.spinner("Generating updated prompt..."):
+
+                        with col2:
+                            current_rating = st.session_state.response_ratings.get(unique_id, individual_result.get('rating', 0))
+                            rating = st.slider(
+                                "Rating",
+                                min_value=0,
+                                max_value=10,
+                                value=int(current_rating),
+                                key=f"rating_individual_{unique_id}_{i}"
+                            )
+                            if rating != current_rating:
+                                st.session_state.response_ratings[unique_id] = rating
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                                if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                                    st.session_state.export_data.loc[
+                                        st.session_state.export_data['unique_id'] == unique_id, 'rating'
+                                    ] = rating
+                                    st.session_state.export_data.loc[
+                                        st.session_state.export_data['unique_id'] == unique_id, 'edited'
+                                    ] = True
+                                st.rerun()
+
+                            if st.button("Rerun", key=f"rerun_individual_{unique_id}_{i}"):
+                                with st.spinner(f"Rerunning test for {prompt_name}..."):
+                                    try:
+                                        result = call_api_func(
+                                            system_prompt=st.session_state.combination_results['individual_prompts'][i],
+                                            query=query_text,
+                                            body_template=body_template,
+                                            headers=headers,
+                                            response_path=response_path
+                                        )
+                                        response_text = result.get('response', None)
+                                        status = result.get('status', 'Failed')
+                                        status_code = str(result.get('status_code', 'N/A'))
+                                    except Exception as e:
+                                        st.error(f"Error rerunning {prompt_name}: {str(e)}")
+                                        response_text = f"Error: {str(e)}"
+                                        status = 'Failed'
+                                        status_code = 'N/A'
+
+                                    st.write(f"Debug: Rerun result for '{prompt_name}': status={status}, status_code={status_code}, response={response_text[:50] if response_text else 'None'}...")
+
+                                    export_row_dict = {
+                                        'test_type': 'Combination_Individual',
+                                        'prompt_name': prompt_name,
+                                        'system_prompt': st.session_state.combination_results['individual_prompts'][i],
+                                        'query': query_text,
+                                        'response': response_text,
+                                        'status': status,
+                                        'status_code': status_code,
+                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        'rating': rating,
+                                        'remark': 'Rerun',
+                                        'edited': True,
+                                        'step': i + 1,
+                                        'input_query': query_text,
+                                        'combination_strategy': st.session_state.combination_results.get('strategy'),
+                                        'combination_temperature': temperature,
+                                        'slider_weights': st.session_state.combination_results.get('slider_weights')
+                                    }
+
+                                    maybe_uid = save_export_entry(
+                                        prompt_name=prompt_name,
+                                        system_prompt=st.session_state.combination_results['individual_prompts'][i],
+                                        query=query_text,
+                                        response=response_text,
+                                        mode="Combination_Individual",
+                                        remark="Rerun",
+                                        status=status,
+                                        status_code=status_code,
+                                        combination_strategy=st.session_state.combination_results.get('strategy'),
+                                        combination_temperature=temperature,
+                                        slider_weights=st.session_state.combination_results.get('slider_weights'),
+                                        rating=rating,
+                                        step=i + 1,
+                                        input_query=query_text
+                                    )
+
+                                    saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=unique_id)
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'response'] = response_text
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'status'] = status
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'status_code'] = status_code
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
+                                    st.session_state.response_ratings[saved_unique_id] = rating
+                                    if saved_unique_id != unique_id:
+                                        st.session_state.response_ratings.pop(unique_id, None)
+                                    individual_result.update({
+                                        'response': response_text,
+                                        'status': status,
+                                        'status_code': status_code,
+                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        'unique_id': saved_unique_id
+                                    })
+                                    st.session_state.combination_results['individual_results'][i] = individual_result
+                                    st.success(f"Test reran successfully for {prompt_name}!")
+                                    st.rerun()
+
+                            if st.button("✨ Suggest a better prompt", key=f"suggest_individual_{unique_id}_{i}", disabled=not gemini_api_key):
+                                with st.spinner("Generating prompt suggestion..."):
+                                    try:
                                         genai.configure(api_key=gemini_api_key)
-                                        suggestion = suggest_func(edited_individual_response, query_text)
-                                        source_idx = st.session_state.combination_results['selected_indices'][j]
-                                        st.session_state.prompts[source_idx] = suggestion
-                                        st.session_state.combination_results['individual_prompts'][j] = suggestion
-                                        st.session_state.combination_results['individual_results'][j]['system_prompt'] = suggestion
-                                        st.session_state.combination_results['individual_results'][j]['edited'] = True
-                                        st.session_state.combination_results['individual_results'][j]['remark'] = 'Reverse prompt generated'
+                                        suggestion = suggest_func(
+                                            edited_individual_response if edited_individual_response else individual_result.get('response', ""),
+                                            query_text
+                                        )
+                                        suggested_prompt_name = f"Suggested_{prompt_name}_{i+1}"
+                                        st.session_state[f"suggested_prompt_individual_{unique_id}"] = suggestion
+                                        st.session_state[f"suggested_prompt_name_individual_{unique_id}"] = suggested_prompt_name
+                                        st.session_state[f"edit_suggest_individual_{unique_id}_active"] = True
+                                    except Exception as e:
+                                        st.error(f"Error generating suggestion for {prompt_name}: {str(e)}")
 
-                                        # Find and update the rows in both DataFrames directly
-                                        if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                                            export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
-                                            if not export_row_index.empty:
-                                                st.session_state.export_data.loc[export_row_index, 'system_prompt'] = suggestion
-                                                st.session_state.export_data.loc[export_row_index, 'edited'] = True
-                                                st.session_state.export_data.loc[export_row_index, 'remark'] = 'Reverse prompt generated'
-                                        
-                                        if 'test_results' in st.session_state and not st.session_state.test_results.empty:
-                                            test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
-                                            if not test_row_index.empty:
-                                                st.session_state.test_results.loc[test_row_index, 'system_prompt'] = suggestion
-                                                st.session_state.test_results.loc[test_row_index, 'edited'] = True
-                                                st.session_state.test_results.loc[test_row_index, 'remark'] = 'Reverse prompt generated'
+                        if st.session_state.get(f"edit_suggest_individual_{unique_id}_active"):
+                            st.markdown("---")
+                            st.subheader("💡 Prompt Suggestion")
+                            suggested_prompt = st.session_state.get(f"suggested_prompt_individual_{unique_id}", "")
+                            suggested_prompt_name = st.session_state.get(f"suggested_prompt_name_individual_{unique_id}", "")
 
-                                        st.success("Prompt updated based on edited response!")
-                                        st.rerun()
+                            edited_suggestion = st.text_area(
+                                "Edit the suggestion if needed:",
+                                value=suggested_prompt,
+                                key=f"edit_suggested_individual_{unique_id}",
+                                height=100
+                            )
+                            edit_prompt_name = st.text_input(
+                                "Name for the new prompt:",
+                                value=suggested_prompt_name,
+                                key=f"edit_suggested_name_individual_{unique_id}"
+                            )
 
-                        st.write("**Details:**")
-                        st.write(
-                            f"Status: {result['status']} | "
-                            f"Time: {result['timestamp']} | "
-                            f"Rating: {st.session_state.response_ratings.get(unique_id, result.get('rating', 0))}/10"
-                        )
-                        
-                        if st.button(f"🔮 Suggest Prompt", key=f"suggest_individual_{j}"):
-                            with st.spinner("Generating prompt suggestion..."):
-                                genai.configure(api_key=gemini_api_key)
-                                suggestion = suggest_func(edited_individual_response, query_text)
-                                st.session_state[f"suggested_prompt_individual_{j}"] = suggestion
-                                st.session_state[f"suggested_prompt_name_individual_{j}"] = f"Suggested Prompt {len(st.session_state.prompts) + 1}"
-                                st.write("**Suggested System Prompt:**")
-                                st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_individual_{j}", disabled=True)
-                        
-                        if st.session_state.get(f"suggested_prompt_individual_{j}"):
-                            col_save, col_save_run, col_edit = st.columns(3)
+                            col_save, col_save_run, col_cancel = st.columns(3)
                             with col_save:
-                                prompt_name = st.text_input("Prompt Name:", value=st.session_state[f"suggested_prompt_name_individual_{j}"], key=f"suggest_individual_name_{j}")
-                                if st.button("💾 Save as Prompt", key=f"save_suggest_individual_{j}"):
-                                    if prompt_name.strip():
-                                        st.session_state.prompts.append(st.session_state[f"suggested_prompt_individual_{j}"])
-                                        st.session_state.prompt_names.append(prompt_name.strip())
-                                        unique_id = save_export_entry(
-                                            prompt_name=prompt_name.strip(),
-                                            system_prompt=st.session_state[f"suggested_prompt_individual_{j}"],
+                                if st.button("💾 Save as New Prompt", key=f"save_suggested_individual_{unique_id}"):
+                                    if edit_prompt_name.strip():
+                                        export_row_dict = {
+                                            'test_type': 'Combination_Individual',
+                                            'prompt_name': edit_prompt_name.strip(),
+                                            'system_prompt': edited_suggestion,
+                                            'query': query_text,
+                                            'response': 'Prompt saved but not executed',
+                                            'status': 'Not Executed',
+                                            'status_code': 'N/A',
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'rating': 0,
+                                            'remark': 'Save only',
+                                            'edited': False,
+                                            'step': i + 1,
+                                            'input_query': query_text,
+                                            'combination_strategy': st.session_state.combination_results.get('strategy'),
+                                            'combination_temperature': temperature,
+                                            'slider_weights': st.session_state.combination_results.get('slider_weights')
+                                        }
+
+                                        maybe_uid = save_export_entry(
+                                            prompt_name=edit_prompt_name.strip(),
+                                            system_prompt=edited_suggestion,
                                             query=query_text,
                                             response='Prompt saved but not executed',
                                             mode='Combination_Individual',
@@ -462,355 +732,358 @@ Return only the combined system prompt without additional explanation.
                                             status='Not Executed',
                                             status_code='N/A',
                                             combination_strategy=st.session_state.combination_results.get('strategy'),
-                                            combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
+                                            combination_temperature=temperature,
                                             slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                            rating=0
+                                            rating=0,
+                                            step=i + 1,
+                                            input_query=query_text
                                         )
-                                        st.session_state.response_ratings[unique_id] = 0
-                                        new_result = pd.DataFrame([{
-                                            'unique_id': unique_id,
-                                            'prompt_name': prompt_name.strip(),
-                                            'system_prompt': st.session_state[f"suggested_prompt_individual_{j}"],
-                                            'query': query_text,
-                                            'response': 'Prompt saved but not executed',
-                                            'status': 'Not Executed',
-                                            'status_code': 'N/A',
-                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            'edited': False,
-                                            'remark': 'Save only',
-                                            'rating': 0
-                                        }])
-                                        st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
-                                        st.session_state[f"suggested_prompt_individual_{j}"] = None
-                                        st.session_state[f"suggested_prompt_name_individual_{j}"] = None
-                                        st.success(f"Saved as new prompt: {prompt_name.strip()}")
+
+                                        saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict)
+                                        add_result_row(
+                                            test_type='Combination_Individual',
+                                            prompt_name=edit_prompt_name.strip(),
+                                            system_prompt=edited_suggestion,
+                                            query=query_text,
+                                            response='Prompt saved but not executed',
+                                            status='Not Executed',
+                                            status_code='N/A',
+                                            remark='Save only',
+                                            rating=0,
+                                            edited=False,
+                                            step=i + 1,
+                                            input_query=query_text,
+                                            combination_strategy=st.session_state.combination_results.get('strategy'),
+                                            combination_temperature=temperature,
+                                            slider_weights=st.session_state.combination_results.get('slider_weights')
+                                        )
+
+                                        last_index = st.session_state.test_results.index[-1]
+                                        st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
+                                        st.session_state.response_ratings[saved_unique_id] = 0
+                                        st.session_state.prompts.append(edited_suggestion)
+                                        st.session_state.prompt_names.append(edit_prompt_name.strip())
+                                        st.session_state[f"edit_suggest_individual_{unique_id}_active"] = False
+                                        del st.session_state[f"suggested_prompt_individual_{unique_id}"]
+                                        del st.session_state[f"suggested_prompt_name_individual_{unique_id}"]
+                                        st.success(f"Saved edited prompt as: {edit_prompt_name.strip()}")
                                         st.rerun()
                                     else:
                                         st.error("Please provide a prompt name")
+
                             with col_save_run:
-                                run_prompt_name = st.text_input("Prompt Name:", value=st.session_state[f"suggested_prompt_name_individual_{j}"], key=f"suggest_individual_run_name_{j}")
-                                if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggest_individual_{j}"):
-                                    if run_prompt_name.strip():
-                                        st.session_state.prompts.append(st.session_state[f"suggested_prompt_individual_{j}"])
-                                        st.session_state.prompt_names.append(run_prompt_name.strip())
+                                if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggested_individual_{unique_id}"):
+                                    if edit_prompt_name.strip():
+                                        st.session_state.prompts.append(edited_suggestion)
+                                        st.session_state.prompt_names.append(edit_prompt_name.strip())
                                         with st.spinner("Running new prompt..."):
-                                            result = call_api_func(st.session_state[f"suggested_prompt_individual_{j}"], query_text, body_template, headers, response_path)
-                                            unique_id = save_export_entry(
-                                                prompt_name=run_prompt_name.strip(),
-                                                system_prompt=st.session_state[f"suggested_prompt_individual_{j}"],
-                                                query=query_text,
-                                                response=result['response'] if 'response' in result else None,
-                                                mode='Combination_Individual',
-                                                remark='Saved and ran',
-                                                status=result['status'],
-                                                status_code=result.get('status_code', 'N/A'),
-                                                combination_strategy=st.session_state.combination_results.get('strategy'),
-                                                combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
-                                                slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                                rating=0
-                                            )
-                                            st.session_state.response_ratings[unique_id] = 0
-                                            new_result = pd.DataFrame([{
-                                                'unique_id': unique_id,
-                                                'prompt_name': run_prompt_name.strip(),
-                                                'system_prompt': st.session_state[f"suggested_prompt_individual_{j}"],
-                                                'query': query_text,
-                                                'response': result['response'] if 'response' in result else None,
-                                                'status': result['status'],
-                                                'status_code': str(result.get('status_code', 'N/A')),
-                                                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                                'edited': False,
-                                                'remark': 'Saved and ran',
-                                                'rating': 0
-                                            }])
-                                            st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
-                                        st.session_state[f"suggested_prompt_individual_{j}"] = None
-                                        st.session_state[f"suggested_prompt_name_individual_{j}"] = None
-                                        st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
-                                        st.rerun()
-                                    else:
-                                        st.error("Please provide a prompt name")
-                            with col_edit:
-                                if st.button("✏️ Edit", key=f"edit_suggest_individual_{j}"):
-                                    st.session_state[f"edit_suggest_individual_{j}_active"] = True
-                                
-                                if st.session_state.get(f"edit_suggest_individual_{j}_active", False):
-                                    edited_suggestion = st.text_area("Edit Suggested Prompt:", value=st.session_state[f"suggested_prompt_individual_{j}"], height=100, key=f"edit_suggested_individual_{j}")
-                                    edit_prompt_name = st.text_input("Prompt Name for Edited Prompt:", value=st.session_state[f"suggested_prompt_name_individual_{j}"], key=f"edit_suggest_individual_name_{j}")
-                                    if st.button("💾 Save Edited Prompt", key=f"save_edited_suggest_individual_{j}"):
-                                        if edit_prompt_name.strip():
-                                            st.session_state.prompts.append(edited_suggestion)
-                                            st.session_state.prompt_names.append(edit_prompt_name.strip())
-                                            unique_id = save_export_entry(
-                                                prompt_name=edit_prompt_name.strip(),
-                                                system_prompt=edited_suggestion,
-                                                query=query_text,
-                                                response='Prompt saved but not executed',
-                                                mode='Combination_Individual',
-                                                remark='Save only',
-                                                status='Not Executed',
-                                                status_code='N/A',
-                                                combination_strategy=st.session_state.combination_results.get('strategy'),
-                                                combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
-                                                slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                                rating=0
-                                            )
-                                            st.session_state.response_ratings[unique_id] = 0
-                                            new_result = pd.DataFrame([{
-                                                'unique_id': unique_id,
+                                            try:
+                                                result = call_api_func(
+                                                    system_prompt=edited_suggestion,
+                                                    query=query_text,
+                                                    body_template=body_template,
+                                                    headers=headers,
+                                                    response_path=response_path
+                                                )
+                                                response_text = result.get('response', None)
+                                                status = result.get('status', 'Failed')
+                                                status_code = str(result.get('status_code', 'N/A'))
+                                            except Exception as e:
+                                                st.error(f"Error running suggested prompt: {str(e)}")
+                                                response_text = f"Error: {str(e)}"
+                                                status = 'Failed'
+                                                status_code = 'N/A'
+
+                                            st.write(f"Debug: Run suggested prompt '{edit_prompt_name}': status={status}, status_code={status_code}, response={response_text[:50] if response_text else 'None'}...")
+
+                                            export_row_dict = {
+                                                'test_type': 'Combination_Individual',
                                                 'prompt_name': edit_prompt_name.strip(),
                                                 'system_prompt': edited_suggestion,
                                                 'query': query_text,
-                                                'response': 'Prompt saved but not executed',
-                                                'status': 'Not Executed',
-                                                'status_code': 'N/A',
+                                                'response': response_text,
+                                                'status': status,
+                                                'status_code': status_code,
                                                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                                'rating': 0,
+                                                'remark': 'Saved and ran',
                                                 'edited': False,
-                                                'remark': 'Save only',
-                                                'rating': 0
-                                            }])
-                                            st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
-                                            st.session_state[f"edit_suggest_individual_{j}_active"] = False
-                                            st.session_state[f"suggested_prompt_individual_{j}"] = None
-                                            st.session_state[f"suggested_prompt_name_individual_{j}"] = None
-                                            st.success(f"Saved edited prompt as: {edit_prompt_name.strip()}")
+                                                'step': i + 1,
+                                                'input_query': query_text,
+                                                'combination_strategy': st.session_state.combination_results.get('strategy'),
+                                                'combination_temperature': temperature,
+                                                'slider_weights': st.session_state.combination_results.get('slider_weights')
+                                            }
+
+                                            maybe_uid = save_export_entry(
+                                                prompt_name=edit_prompt_name.strip(),
+                                                system_prompt=edited_suggestion,
+                                                query=query_text,
+                                                response=response_text,
+                                                mode='Combination_Individual',
+                                                remark='Saved and ran',
+                                                status=status,
+                                                status_code=status_code,
+                                                combination_strategy=st.session_state.combination_results.get('strategy'),
+                                                combination_temperature=temperature,
+                                                slider_weights=st.session_state.combination_results.get('slider_weights'),
+                                                rating=0,
+                                                step=i + 1,
+                                                input_query=query_text
+                                            )
+
+                                            saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict)
+                                            add_result_row(
+                                                test_type='Combination_Individual',
+                                                prompt_name=edit_prompt_name.strip(),
+                                                system_prompt=edited_suggestion,
+                                                query=query_text,
+                                                response=response_text,
+                                                status=status,
+                                                status_code=status_code,
+                                                remark='Saved and ran',
+                                                rating=0,
+                                                edited=False,
+                                                step=i + 1,
+                                                input_query=query_text,
+                                                combination_strategy=st.session_state.combination_results.get('strategy'),
+                                                combination_temperature=temperature,
+                                                slider_weights=st.session_state.combination_results.get('slider_weights')
+                                            )
+
+                                            last_index = st.session_state.test_results.index[-1]
+                                            st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
+                                            st.session_state.response_ratings[saved_unique_id] = 0
+                                            st.session_state[f"edit_suggest_individual_{unique_id}_active"] = False
+                                            del st.session_state[f"suggested_prompt_individual_{unique_id}"]
+                                            del st.session_state[f"suggested_prompt_name_individual_{unique_id}"]
+                                            st.success(f"Saved and ran new prompt: {edit_prompt_name.strip()}")
                                             st.rerun()
-                                        else:
-                                            st.error("Please provide a prompt name")
-            
-            with col2:
-                st.subheader("🤝 Combined Prompt Result")
-                combined_result = st.session_state.combination_results['combined_result']
-                
-                if combined_result and combined_result.get('response'):
-                    status_color = "🟢" if combined_result['status'] == 'Success' else "🔴"
-                    
-                    st.markdown(f"**Status:** {status_color} {combined_result['status']}")
-                    
-                    edited_combined_response = st.text_area(
-                        "Combined Response (editable):", 
-                        value=combined_result['response'], 
-                        height=300, 
-                        key="edit_combined_response"
-                    )
+                                    else:
+                                        st.error("Please provide a prompt name")
 
-                    unique_id = combined_result['unique_id']
-                    rating_key = f"rating_{unique_id}"
-                    current_rating = st.session_state.response_ratings.get(unique_id, int(combined_result.get('rating', 0) or 0))
-                    new_rating = st.slider(
-                        "Rate this response (0-10):",
-                        min_value=0,
-                        max_value=10,
-                        value=int(current_rating),
-                        key=rating_key
-                    )
-
-                    if new_rating != current_rating:
-                        st.session_state.response_ratings[unique_id] = new_rating
-                        
-                        # Find and update the rows in both DataFrames directly
-                        if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                            export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == unique_id].index
-                            if not export_row_index.empty:
-                                st.session_state.export_data.loc[export_row_index, 'rating'] = new_rating
-                                st.session_state.export_data.loc[export_row_index, 'edited'] = True
-                                st.session_state.export_data.loc[export_row_index, 'remark'] = 'Rating updated'
-                        
-                        if 'test_results' in st.session_state and not st.session_state.test_results.empty:
-                            test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == unique_id].index
-                            if not test_row_index.empty:
-                                st.session_state.test_results.loc[test_row_index, 'rating'] = new_rating
-                                st.session_state.test_results.loc[test_row_index, 'edited'] = True
-                                st.session_state.test_results.loc[test_row_index, 'remark'] = 'Rating updated'
-
-                        st.session_state.combination_results['combined_result']['rating'] = new_rating
-                        st.session_state.combination_results['combined_result']['edited'] = True
-                        st.rerun()
-
-                    if edited_combined_response != combined_result['response']:
-                        col_save, col_reverse = st.columns(2)
-                        with col_save:
-                            if st.button("💾 Save Combined Response"):
-                                st.session_state.combination_results['combined_result']['response'] = edited_combined_response
-                                st.session_state.combination_results['combined_result']['edited'] = True
-                                
-                                # Find and update the rows in both DataFrames directly
-                                if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                                    export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == combined_result['unique_id']].index
-                                    if not export_row_index.empty:
-                                        st.session_state.export_data.loc[export_row_index, 'response'] = edited_combined_response
-                                        st.session_state.export_data.loc[export_row_index, 'edited'] = True
-                                        st.session_state.export_data.loc[export_row_index, 'remark'] = 'Edited and saved'
-                                
-                                if 'test_results' in st.session_state and not st.session_state.test_results.empty:
-                                    test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == combined_result['unique_id']].index
-                                    if not test_row_index.empty:
-                                        st.session_state.test_results.loc[test_row_index, 'response'] = edited_combined_response
-                                        st.session_state.test_results.loc[test_row_index, 'edited'] = True
-                                        st.session_state.test_results.loc[test_row_index, 'remark'] = 'Edited and saved'
-
-                                st.success("Combined response updated!")
-                                st.rerun()
-                        with col_reverse:
-                            if st.button("🔄 Reverse Prompt for Combined"):
-                                with st.spinner("Generating updated prompt..."):
-                                    genai.configure(api_key=gemini_api_key)
-                                    suggestion = suggest_func(edited_combined_response, query_text)
-                                    st.session_state.combination_results['combined_prompt'] = suggestion
-                                    st.session_state.combination_results['combined_result']['system_prompt'] = suggestion
-                                    st.session_state.combination_results['combined_result']['edited'] = True
-                                    st.session_state.combination_results['combined_result']['remark'] = 'Reverse prompt generated'
-                                    
-                                    # Find and update the rows in both DataFrames directly
-                                    if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                                        export_row_index = st.session_state.export_data[st.session_state.export_data['unique_id'] == combined_result['unique_id']].index
-                                        if not export_row_index.empty:
-                                            st.session_state.export_data.loc[export_row_index, 'system_prompt'] = suggestion
-                                            st.session_state.export_data.loc[export_row_index, 'edited'] = True
-                                            st.session_state.export_data.loc[export_row_index, 'remark'] = 'Reverse prompt generated'
-                                    
-                                    if 'test_results' in st.session_state and not st.session_state.test_results.empty:
-                                        test_row_index = st.session_state.test_results[st.session_state.test_results['unique_id'] == combined_result['unique_id']].index
-                                        if not test_row_index.empty:
-                                            st.session_state.test_results.loc[test_row_index, 'system_prompt'] = suggestion
-                                            st.session_state.test_results.loc[test_row_index, 'edited'] = True
-                                            st.session_state.test_results.loc[test_row_index, 'remark'] = 'Reverse prompt generated'
-
-                                    st.success("Combined prompt updated based on edited response!")
+                            with col_cancel:
+                                if st.button("Cancel", key=f"cancel_suggested_individual_{unique_id}"):
+                                    st.session_state[f"edit_suggest_individual_{unique_id}_active"] = False
+                                    del st.session_state[f"suggested_prompt_individual_{unique_id}"]
+                                    del st.session_state[f"suggested_prompt_name_individual_{unique_id}"]
                                     st.rerun()
 
-                    st.write("**Details:**")
-                    st.write(
-                        f"Status: {combined_result['status']} | "
-                        f"Time: {combined_result['timestamp']} | "
-                        f"Rating: {st.session_state.response_ratings.get(unique_id, combined_result.get('rating', 0))}/10"
-                    )
-                else:
-                    st.info("Combined prompt has not been tested yet.")
-                
-                if st.button("🔮 Suggest Prompt for Combined Response"):
-                    with st.spinner("Generating prompt suggestion..."):
-                        genai.configure(api_key=gemini_api_key)
-                        suggestion = suggest_func(edited_combined_response, query_text)
-                        st.session_state.suggested_prompt = suggestion
-                        st.session_state.suggested_prompt_name = f"Suggested Prompt {len(st.session_state.prompts) + 1}"
-                        st.write("**Suggested System Prompt:**")
-                        st.text_area("Suggested Prompt:", value=suggestion, height=100, key="suggested_combined", disabled=True)
-                
-                if st.session_state.get('suggested_prompt'):
-                    col_save, col_save_run, col_edit = st.columns(3)
-                    with col_save:
-                        prompt_name = st.text_input("Prompt Name:", value=st.session_state.suggested_prompt_name, key="suggest_combined_name")
-                        if st.button("💾 Save as Prompt", key="save_suggest_combined"):
-                            if prompt_name.strip():
-                                st.session_state.prompts.append(st.session_state.suggested_prompt)
-                                st.session_state.prompt_names.append(prompt_name.strip())
-                                unique_id = save_export_entry(
-                                    prompt_name=prompt_name.strip(),
-                                    system_prompt=st.session_state.suggested_prompt,
-                                    query=query_text,
-                                    response='Prompt saved but not executed',
-                                    mode='Combination_Individual',
-                                    remark='Save only',
-                                    status='Not Executed',
-                                    status_code='N/A',
-                                    combination_strategy=st.session_state.combination_results.get('strategy'),
-                                    combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
-                                    slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                    rating=0
-                                )
-                                st.session_state.response_ratings[unique_id] = 0
-                                new_result = pd.DataFrame([{
-                                    'unique_id': unique_id,
-                                    'prompt_name': prompt_name.strip(),
-                                    'system_prompt': st.session_state.suggested_prompt,
+                        st.write("**Details:**")
+                        st.write(
+                            f"Status Code: {individual_result.get('status_code', 'N/A')} | "
+                            f"Time: {individual_result.get('timestamp', 'N/A')} | "
+                            f"Step: {i + 1} | "
+                            f"Rating: {st.session_state.response_ratings.get(unique_id, individual_result.get('rating', 0))}/10 "
+                            f"({st.session_state.response_ratings.get(unique_id, individual_result.get('rating', 0))*10}%)"
+                        )
+
+        with combined_result_container:
+            st.subheader("Combined Result")
+            if st.session_state.combination_results.get('combined_result'):
+                combined_result = st.session_state.combination_results['combined_result']
+                unique_id = combined_result.get('unique_id', f"combined_{uuid.uuid4()}")
+                st.write(f"Debug: Displaying combined result, unique_id={unique_id}")
+
+                with st.expander("**Combined Prompt**"):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.markdown(f"**Query:**\n\n> {query_text}")
+                        st.markdown(f"**System Prompt:**\n\n> {st.session_state.combination_results['combined_prompt']}")
+                        edited_combined_response = st.text_area(
+                            "Response (editable):",
+                            value=combined_result.get('response', ""),
+                            key=f"edit_combined_response_{unique_id}",
+                            height=150
+                        )
+                        if edited_combined_response != (combined_result.get('response', "") or ""):
+                            if st.button("💾 Save Edited Response", key=f"save_combined_response_{unique_id}"):
+                                export_row_dict = {
+                                    'test_type': 'Combination_Combined',
+                                    'prompt_name': 'AI_Combined',
+                                    'system_prompt': st.session_state.combination_results['combined_prompt'],
                                     'query': query_text,
-                                    'response': 'Prompt saved but not executed',
-                                    'status': 'Not Executed',
-                                    'status_code': 'N/A',
+                                    'response': edited_combined_response,
+                                    'status': combined_result.get('status', 'Failed'),
+                                    'status_code': str(combined_result.get('status_code', 'N/A')),
                                     'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    'edited': False,
-                                    'remark': 'Save only',
-                                    'rating': 0
-                                }])
-                                st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
-                                st.session_state.suggested_prompt = None
-                                st.session_state.suggested_prompt_name = None
-                                st.success(f"Saved as new prompt: {prompt_name.strip()}")
+                                    'rating': st.session_state.response_ratings.get(unique_id, 0),
+                                    'remark': 'Edited response',
+                                    'edited': True,
+                                    'step': None,
+                                    'input_query': query_text,
+                                    'combination_strategy': st.session_state.combination_results.get('strategy'),
+                                    'combination_temperature': temperature,
+                                    'slider_weights': st.session_state.combination_results.get('slider_weights')
+                                }
+
+                                maybe_uid = save_export_entry(
+                                    prompt_name='AI_Combined',
+                                    system_prompt=st.session_state.combination_results['combined_prompt'],
+                                    query=query_text,
+                                    response=edited_combined_response,
+                                    mode="Combination_Combined",
+                                    remark="Edited response",
+                                    status=combined_result.get('status', 'Failed'),
+                                    status_code=str(combined_result.get('status_code', 'N/A')),
+                                    combination_strategy=st.session_state.combination_results.get('strategy'),
+                                    combination_temperature=temperature,
+                                    slider_weights=st.session_state.combination_results.get('slider_weights'),
+                                    rating=st.session_state.response_ratings.get(unique_id, 0),
+                                    step=None,
+                                    input_query=query_text
+                                )
+
+                                saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=unique_id)
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'response'] = edited_combined_response
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark'] = 'Edited response'
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
+                                st.session_state.response_ratings[saved_unique_id] = st.session_state.response_ratings.pop(unique_id, 0)
+                                combined_result['unique_id'] = saved_unique_id
+                                st.session_state.combination_results['combined_result'] = combined_result
+                                st.success("Response updated!")
                                 st.rerun()
-                            else:
-                                st.error("Please provide a prompt name")
-                    with col_save_run:
-                        run_prompt_name = st.text_input("Prompt Name:", value=st.session_state.suggested_prompt_name, key="suggest_combined_run_name")
-                        if st.button("🏃 Save as Prompt and Run", key="save_run_suggest_combined"):
-                            if run_prompt_name.strip():
-                                st.session_state.prompts.append(st.session_state.suggested_prompt)
-                                st.session_state.prompt_names.append(run_prompt_name.strip())
-                                with st.spinner("Running new prompt..."):
-                                    result = call_api_func(st.session_state.suggested_prompt, query_text, body_template, headers, response_path)
-                                    unique_id = save_export_entry(
-                                        prompt_name=run_prompt_name.strip(),
-                                        system_prompt=st.session_state.suggested_prompt,
+
+                    with col2:
+                        current_rating = st.session_state.response_ratings.get(unique_id, combined_result.get('rating', 0))
+                        rating = st.slider(
+                            "Rating",
+                            min_value=0,
+                            max_value=10,
+                            value=int(current_rating),
+                            key=f"rating_combined_{unique_id}"
+                        )
+                        if rating != current_rating:
+                            st.session_state.response_ratings[unique_id] = rating
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                            if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                                st.session_state.export_data.loc[
+                                    st.session_state.export_data['unique_id'] == unique_id, 'rating'
+                                ] = rating
+                                st.session_state.export_data.loc[
+                                    st.session_state.export_data['unique_id'] == unique_id, 'edited'
+                                ] = True
+                            st.rerun()
+
+                        if st.button("Rerun", key=f"rerun_combined_{unique_id}"):
+                            with st.spinner("Rerunning test..."):
+                                try:
+                                    result = call_api_func(
+                                        system_prompt=st.session_state.combination_results['combined_prompt'],
                                         query=query_text,
-                                        response=result['response'] if 'response' in result else None,
-                                        mode='Combination_Individual',
-                                        remark='Saved and ran',
-                                        status=result['status'],
-                                        status_code=result.get('status_code', 'N/A'),
-                                        combination_strategy=st.session_state.combination_results.get('strategy'),
-                                        combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
-                                        slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                        rating=0
+                                        body_template=body_template,
+                                        headers=headers,
+                                        response_path=response_path
                                     )
-                                    st.session_state.response_ratings[unique_id] = 0
-                                    new_result = pd.DataFrame([{
-                                        'unique_id': unique_id,
-                                        'prompt_name': run_prompt_name.strip(),
-                                        'system_prompt': st.session_state.suggested_prompt,
-                                        'query': query_text,
-                                        'response': result['response'] if 'response' in result else None,
-                                        'status': result['status'],
-                                        'status_code': str(result.get('status_code', 'N/A')),
-                                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        'edited': False,
-                                        'remark': 'Saved and ran',
-                                        'rating': 0
-                                    }])
-                                    st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
-                                st.session_state.suggested_prompt = None
-                                st.session_state.suggested_prompt_name = None
-                                st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
+                                    response_text = result.get('response', None)
+                                    status = result.get('status', 'Failed')
+                                    status_code = str(result.get('status_code', 'N/A'))
+                                except Exception as e:
+                                    st.error(f"Error rerunning combined prompt: {str(e)}")
+                                    response_text = f"Error: {str(e)}"
+                                    status = 'Failed'
+                                    status_code = 'N/A'
+
+                                st.write(f"Debug: Rerun result for combined prompt: status={status}, status_code={status_code}, response={response_text[:50] if response_text else 'None'}...")
+
+                                export_row_dict = {
+                                    'test_type': 'Combination_Combined',
+                                    'prompt_name': 'AI_Combined',
+                                    'system_prompt': st.session_state.combination_results['combined_prompt'],
+                                    'query': query_text,
+                                    'response': response_text,
+                                    'status': status,
+                                    'status_code': status_code,
+                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    'rating': rating,
+                                    'remark': 'Rerun',
+                                    'edited': True,
+                                    'step': None,
+                                    'input_query': query_text,
+                                    'combination_strategy': st.session_state.combination_results.get('strategy'),
+                                    'combination_temperature': temperature,
+                                    'slider_weights': st.session_state.combination_results.get('slider_weights')
+                                }
+
+                                maybe_uid = save_export_entry(
+                                    prompt_name='AI_Combined',
+                                    system_prompt=st.session_state.combination_results['combined_prompt'],
+                                    query=query_text,
+                                    response=response_text,
+                                    mode="Combination_Combined",
+                                    remark="Rerun",
+                                    status=status,
+                                    status_code=status_code,
+                                    combination_strategy=st.session_state.combination_results.get('strategy'),
+                                    combination_temperature=temperature,
+                                    slider_weights=st.session_state.combination_results.get('slider_weights'),
+                                    rating=rating,
+                                    step=None,
+                                    input_query=query_text
+                                )
+
+                                saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=unique_id)
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'response'] = response_text
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'status'] = status
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'status_code'] = status_code
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
+                                st.session_state.response_ratings[saved_unique_id] = rating
+                                if saved_unique_id != unique_id:
+                                    st.session_state.response_ratings.pop(unique_id, None)
+                                combined_result.update({
+                                    'response': response_text,
+                                    'status': status,
+                                    'status_code': status_code,
+                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    'unique_id': saved_unique_id
+                                })
+                                st.session_state.combination_results['combined_result'] = combined_result
+                                st.success("Test reran successfully!")
                                 st.rerun()
-                            else:
-                                st.error("Please provide a prompt name")
-                    with col_edit:
-                        if st.button("✏️ Edit", key="edit_suggest_combined"):
-                            st.session_state.edit_suggest_combined_active = True
-                        
-                        if st.session_state.get("edit_suggest_combined_active", False):
-                            edited_suggestion = st.text_area("Edit Suggested Prompt:", value=st.session_state.suggested_prompt, height=100, key="edit_suggested_combined")
-                            edit_prompt_name = st.text_input("Prompt Name for Edited Prompt:", value=st.session_state.suggested_prompt_name, key="edit_suggest_combined_name")
-                            if st.button("💾 Save Edited Prompt", key="save_edited_suggest_combined"):
+
+                        if st.button("✨ Suggest a better prompt", key=f"suggest_combined_{unique_id}", disabled=not gemini_api_key):
+                            with st.spinner("Generating prompt suggestion..."):
+                                try:
+                                    genai.configure(api_key=gemini_api_key)
+                                    suggestion = suggest_func(
+                                        edited_combined_response if edited_combined_response else combined_result.get('response', ""),
+                                        query_text
+                                    )
+                                    suggested_prompt_name = f"Suggested_AI_Combined"
+                                    st.session_state[f"suggested_prompt_combined_{unique_id}"] = suggestion
+                                    st.session_state[f"suggested_prompt_name_combined_{unique_id}"] = suggested_prompt_name
+                                    st.session_state[f"edit_suggest_combined_{unique_id}_active"] = True
+                                except Exception as e:
+                                    st.error(f"Error generating suggestion for combined prompt: {str(e)}")
+
+                    if st.session_state.get(f"edit_suggest_combined_{unique_id}_active"):
+                        st.markdown("---")
+                        st.subheader("💡 Prompt Suggestion")
+                        suggested_prompt = st.session_state.get(f"suggested_prompt_combined_{unique_id}", "")
+                        suggested_prompt_name = st.session_state.get(f"suggested_prompt_name_combined_{unique_id}", "")
+
+                        edited_suggestion = st.text_area(
+                            "Edit the suggestion if needed:",
+                            value=suggested_prompt,
+                            key=f"edit_suggested_combined_{unique_id}",
+                            height=100
+                        )
+                        edit_prompt_name = st.text_input(
+                            "Name for the new prompt:",
+                            value=suggested_prompt_name,
+                            key=f"edit_suggested_name_combined_{unique_id}"
+                        )
+
+                        col_save, col_save_run, col_cancel = st.columns(3)
+                        with col_save:
+                            if st.button("💾 Save as New Prompt", key=f"save_suggested_combined_{unique_id}"):
                                 if edit_prompt_name.strip():
-                                    st.session_state.prompts.append(edited_suggestion)
-                                    st.session_state.prompt_names.append(edit_prompt_name.strip())
-                                    unique_id = save_export_entry(
-                                        prompt_name=edit_prompt_name.strip(),
-                                        system_prompt=edited_suggestion,
-                                        query=query_text,
-                                        response='Prompt saved but not executed',
-                                        mode='Combination_Individual',
-                                        remark='Save only',
-                                        status='Not Executed',
-                                        status_code= str(result.get('status_code', 'N/A')),
-                                        combination_strategy=st.session_state.combination_results.get('strategy'),
-                                        combination_temperature=int(st.session_state.combination_results.get('temperature', 0)),
-                                        slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                        rating=0
-                                    )
-                                    st.session_state.response_ratings[unique_id] = 0
-                                    new_result = pd.DataFrame([{
-                                        'unique_id': unique_id,
+                                    export_row_dict = {
+                                        'test_type': 'Combination_Combined',
                                         'prompt_name': edit_prompt_name.strip(),
                                         'system_prompt': edited_suggestion,
                                         'query': query_text,
@@ -818,15 +1091,169 @@ Return only the combined system prompt without additional explanation.
                                         'status': 'Not Executed',
                                         'status_code': 'N/A',
                                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        'edited': False,
+                                        'rating': 0,
                                         'remark': 'Save only',
-                                        'rating': 0
-                                    }])
-                                    st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
-                                    st.session_state.edit_suggest_combined_active = False
-                                    st.session_state.suggested_prompt = None
-                                    st.session_state.suggested_prompt_name = None
+                                        'edited': False,
+                                        'step': None,
+                                        'input_query': query_text,
+                                        'combination_strategy': st.session_state.combination_results.get('strategy'),
+                                        'combination_temperature': temperature,
+                                        'slider_weights': st.session_state.combination_results.get('slider_weights')
+                                    }
+
+                                    maybe_uid = save_export_entry(
+                                        prompt_name=edit_prompt_name.strip(),
+                                        system_prompt=edited_suggestion,
+                                        query=query_text,
+                                        response='Prompt saved but not executed',
+                                        mode='Combination_Combined',
+                                        remark='Save only',
+                                        status='Not Executed',
+                                        status_code='N/A',
+                                        combination_strategy=st.session_state.combination_results.get('strategy'),
+                                        combination_temperature=temperature,
+                                        slider_weights=st.session_state.combination_results.get('slider_weights'),
+                                        rating=0,
+                                        step=None,
+                                        input_query=query_text
+                                    )
+
+                                    saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict)
+                                    add_result_row(
+                                        test_type='Combination_Combined',
+                                        prompt_name=edit_prompt_name.strip(),
+                                        system_prompt=edited_suggestion,
+                                        query=query_text,
+                                        response='Prompt saved but not executed',
+                                        status='Not Executed',
+                                        status_code='N/A',
+                                        remark='Save only',
+                                        rating=0,
+                                        edited=False,
+                                        step=None,
+                                        input_query=query_text,
+                                        combination_strategy=st.session_state.combination_results.get('strategy'),
+                                        combination_temperature=temperature,
+                                        slider_weights=st.session_state.combination_results.get('slider_weights')
+                                    )
+
+                                    last_index = st.session_state.test_results.index[-1]
+                                    st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
+                                    st.session_state.response_ratings[saved_unique_id] = 0
+                                    st.session_state.prompts.append(edited_suggestion)
+                                    st.session_state.prompt_names.append(edit_prompt_name.strip())
+                                    st.session_state[f"edit_suggest_combined_{unique_id}_active"] = False
+                                    del st.session_state[f"suggested_prompt_combined_{unique_id}"]
+                                    del st.session_state[f"suggested_prompt_name_combined_{unique_id}"]
                                     st.success(f"Saved edited prompt as: {edit_prompt_name.strip()}")
                                     st.rerun()
                                 else:
                                     st.error("Please provide a prompt name")
+
+                        with col_save_run:
+                            if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggested_combined_{unique_id}"):
+                                if edit_prompt_name.strip():
+                                    st.session_state.prompts.append(edited_suggestion)
+                                    st.session_state.prompt_names.append(edit_prompt_name.strip())
+                                    with st.spinner("Running new prompt..."):
+                                        try:
+                                            result = call_api_func(
+                                                system_prompt=edited_suggestion,
+                                                query=query_text,
+                                                body_template=body_template,
+                                                headers=headers,
+                                                response_path=response_path
+                                            )
+                                            response_text = result.get('response', None)
+                                            status = result.get('status', 'Failed')
+                                            status_code = str(result.get('status_code', 'N/A'))
+                                        except Exception as e:
+                                            st.error(f"Error running suggested prompt: {str(e)}")
+                                            response_text = f"Error: {str(e)}"
+                                            status = 'Failed'
+                                            status_code = 'N/A'
+
+                                        st.write(f"Debug: Run suggested prompt '{edit_prompt_name}': status={status}, status_code={status_code}, response={response_text[:50] if response_text else 'None'}...")
+
+                                        export_row_dict = {
+                                            'test_type': 'Combination_Combined',
+                                            'prompt_name': edit_prompt_name.strip(),
+                                            'system_prompt': edited_suggestion,
+                                            'query': query_text,
+                                            'response': response_text,
+                                            'status': status,
+                                            'status_code': status_code,
+                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            'rating': 0,
+                                            'remark': 'Saved and ran',
+                                            'edited': False,
+                                            'step': None,
+                                            'input_query': query_text,
+                                            'combination_strategy': st.session_state.combination_results.get('strategy'),
+                                            'combination_temperature': temperature,
+                                            'slider_weights': st.session_state.combination_results.get('slider_weights')
+                                        }
+
+                                        maybe_uid = save_export_entry(
+                                            prompt_name=edit_prompt_name.strip(),
+                                            system_prompt=edited_suggestion,
+                                            query=query_text,
+                                            response=response_text,
+                                            mode='Combination_Combined',
+                                            remark='Saved and ran',
+                                            status=status,
+                                            status_code=status_code,
+                                            combination_strategy=st.session_state.combination_results.get('strategy'),
+                                            combination_temperature=temperature,
+                                            slider_weights=st.session_state.combination_results.get('slider_weights'),
+                                            rating=0,
+                                            step=None,
+                                            input_query=query_text
+                                        )
+
+                                        saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict)
+                                        add_result_row(
+                                            test_type='Combination_Combined',
+                                            prompt_name=edit_prompt_name.strip(),
+                                            system_prompt=edited_suggestion,
+                                            query=query_text,
+                                            response=response_text,
+                                            status=status,
+                                            status_code=status_code,
+                                            remark='Saved and ran',
+                                            rating=0,
+                                            edited=False,
+                                            step=None,
+                                            input_query=query_text,
+                                            combination_strategy=st.session_state.combination_results.get('strategy'),
+                                            combination_temperature=temperature,
+                                            slider_weights=st.session_state.combination_results.get('slider_weights')
+                                        )
+
+                                        last_index = st.session_state.test_results.index[-1]
+                                        st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
+                                        st.session_state.response_ratings[saved_unique_id] = 0
+                                        st.session_state[f"edit_suggest_combined_{unique_id}_active"] = False
+                                        del st.session_state[f"suggested_prompt_combined_{unique_id}"]
+                                        del st.session_state[f"suggested_prompt_name_combined_{unique_id}"]
+                                        st.success(f"Saved and ran new prompt: {edit_prompt_name.strip()}")
+                                        st.rerun()
+                                else:
+                                    st.error("Please provide a prompt name")
+
+                        with col_cancel:
+                            if st.button("Cancel", key=f"cancel_suggested_combined_{unique_id}"):
+                                st.session_state[f"edit_suggest_combined_{unique_id}_active"] = False
+                                del st.session_state[f"suggested_prompt_combined_{unique_id}"]
+                                del st.session_state[f"suggested_prompt_name_combined_{unique_id}"]
+                                st.rerun()
+
+                    st.write("**Details:**")
+                    st.write(
+                        f"Status Code: {combined_result.get('status_code', 'N/A')} | "
+                        f"Time: {combined_result.get('timestamp', 'N/A')} | "
+                        f"Rating: {st.session_state.response_ratings.get(unique_id, combined_result.get('rating', 0))}/10 "
+                        f"({st.session_state.response_ratings.get(unique_id, combined_result.get('rating', 0))*10}%)"
+                    )
+            else:
+                st.info("No combined results to display yet.")
