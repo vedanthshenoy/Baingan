@@ -25,13 +25,20 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
             'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query',
             'combination_strategy', 'combination_temperature', 'slider_weights',
             'rating', 'remark'
-        ])
+        ]).astype({'step': 'str'})
 
     # Session state cleanup
     if 'response_ratings' not in st.session_state:
         st.session_state.response_ratings = {}
-    if 'test_results' in st.session_state and isinstance(st.session_state.test_results, pd.DataFrame):
+    if 'test_results' not in st.session_state or not isinstance(st.session_state.test_results, pd.DataFrame):
+        st.session_state.test_results = pd.DataFrame(columns=[
+            'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
+            'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query',
+            'combination_strategy', 'combination_temperature', 'rating', 'remark'
+        ]).astype({'step': 'str'})
+    elif isinstance(st.session_state.test_results, pd.DataFrame):
         st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
+        st.session_state.test_results['step'] = st.session_state.test_results['step'].astype(str)
         st.session_state.test_results = st.session_state.test_results[
             st.session_state.test_results['response'].notnull() & st.session_state.test_results['status'].notnull()
         ].reset_index(drop=True)
@@ -171,6 +178,8 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
     individual_results_container = st.container()
     # Placeholder for combined result
     combined_result_container = st.container()
+    # Placeholder for suggested results
+    suggested_results_container = st.container()
 
     # Combined button to combine and test
     if st.button("🧪 Combine and Test Prompts", type="primary", disabled=not (gemini_api_key and selected_prompts and api_url and query_text)):
@@ -1000,7 +1009,7 @@ Return only the combined system prompt without additional explanation.
 
     # Display Suggested Results if exist
     if st.session_state.get('combination_results') and st.session_state.combination_results.get('suggested_results'):
-        with individual_results_container:
+        with suggested_results_container:
             st.subheader("Suggested Prompt Results")
             for i, suggested_result in enumerate(st.session_state.combination_results['suggested_results']):
                 unique_id = suggested_result['unique_id']
