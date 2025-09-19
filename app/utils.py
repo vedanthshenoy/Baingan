@@ -18,12 +18,13 @@ def add_result_row(
     input_query=None,
     combination_strategy=None,
     combination_temperature=None,
+    user_name="Unknown"
 ):
     """Adds a new row to the test_results DataFrame with a consistent schema."""
     if 'test_results' not in st.session_state or not isinstance(st.session_state.test_results, pd.DataFrame):
         # Define a consistent schema with all possible columns
         st.session_state.test_results = pd.DataFrame(columns=[
-            'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query',
+            'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query',
             'response', 'status', 'status_code', 'timestamp', 'rating',
             'remark', 'edited', 'step', 'input_query',
             'combination_strategy', 'combination_temperature'
@@ -32,6 +33,7 @@ def add_result_row(
     unique_id = f"{test_type}_{prompt_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
 
     new_entry = pd.DataFrame([{
+        'user_name': user_name,
         'unique_id': unique_id,
         'test_type': test_type,
         'prompt_name': prompt_name,

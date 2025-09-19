@@ -14,6 +14,7 @@ from app.modes.individual import render_individual_testing
 from app.modes.chaining import render_prompt_chaining
 from app.modes.combination import render_prompt_combination
 from app.export import render_export_section
+from app.auth import render_auth_page  # Import the auth module
 
 # Load environment variables
 load_dotenv()
@@ -25,12 +26,16 @@ st.set_page_config(
     layout="wide"
 )
 
+# Check if user is logged in
+if not render_auth_page():
+    st.stop()  # Stop rendering the rest of the app if not logged in
+
 # Initialize session state defaults with consistent columns
 defaults = {
     "prompts": [],
     "prompt_names": [],
     "test_results": pd.DataFrame(columns=[
-        'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 'status', 'status_code', 
+        'user_name', 'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 'status', 'status_code', 
         'timestamp', 'rating', 'remark', 'edited'
     ]),
     "chain_results": [],
@@ -39,7 +44,7 @@ defaults = {
     "last_selected_prompts": [],
     "response_ratings": {},
     "export_data": pd.DataFrame(columns=[
-        'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
+        'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
         'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query', 
         'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
     ]),
@@ -155,12 +160,13 @@ with col1:
 
 with col2:
     api_url = st.session_state.api_url
+    user_name = st.session_state.get("user_name", "Unknown")  # Get user_name from session state
     if test_mode == "Individual Testing":
-        render_individual_testing(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response)
+        render_individual_testing(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, user_name=user_name)
     elif test_mode == "Prompt Chaining":
-        render_prompt_chaining(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response)
+        render_prompt_chaining(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, user_name=user_name)
     elif test_mode == "Prompt Combination":
-        render_prompt_combination(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, st.session_state.get("gemini_api_key"))
+        render_prompt_combination(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, st.session_state.get("gemini_api_key"), user_name=user_name)
 
 render_export_section(query_text)
 
