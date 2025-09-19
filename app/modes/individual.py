@@ -75,11 +75,13 @@ def render_individual_testing(
     response_path,
     call_api_func=None,
     suggest_func=None,
+    user_name="Unknown"
 ):
     """
     Individual testing UI.
     call_api_func: function(system_prompt, query, body_template, headers, response_path) -> dict
     suggest_func: function(response_text, original_query) -> str
+    user_name: str, name of the logged-in user
     """
 
     st.header("🧪 Individual Testing")
@@ -89,7 +91,7 @@ def render_individual_testing(
 
     # Expected schema for both test_results and export_data
     expected_columns = [
-        'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
+        'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
         'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
     ]
 
@@ -164,13 +166,15 @@ def render_individual_testing(
                         status=status,
                         status_code=status_code,
                         rating=0,
-                        edited=False
+                        edited=False,
+                        user_name=user_name
                     )
 
                     # register default rating for this unique_id
                     st.session_state.response_ratings[unique_id] = 0
 
                     new_result = pd.DataFrame([{
+                        'user_name': user_name,
                         'unique_id': unique_id,
                         'test_type': 'Individual',
                         'prompt_name': prompt_name,
@@ -274,7 +278,8 @@ def render_individual_testing(
                         status=result.get('status', 'Unknown'),
                         status_code=result.get('status_code', 'N/A'),
                         rating=new_rating,
-                        edited=True
+                        edited=True,
+                        user_name=user_name
                     )
 
                     # register rating for the saved_unique_id
@@ -323,7 +328,8 @@ def render_individual_testing(
                             status='Not Executed',
                             status_code='N/A',
                             rating=0,
-                            edited=False
+                            edited=False,
+                            user_name=user_name
                         )
 
                         # register rating default for this new row
@@ -335,6 +341,7 @@ def render_individual_testing(
 
                         # append to test_results
                         new_result = pd.DataFrame([{
+                            'user_name': user_name,
                             'unique_id': saved_unique_id,
                             'test_type': 'Individual',
                             'prompt_name': saved_name,
@@ -389,7 +396,8 @@ def render_individual_testing(
                                 status=status,
                                 status_code=status_code,
                                 rating=0,
-                                edited=False
+                                edited=False,
+                                user_name=user_name
                             )
 
                             # register rating default for this new row
@@ -401,6 +409,7 @@ def render_individual_testing(
 
                             # append to test_results
                             new_result = pd.DataFrame([{
+                                'user_name': user_name,
                                 'unique_id': saved_unique_id,
                                 'test_type': 'Individual',
                                 'prompt_name': saved_name,
