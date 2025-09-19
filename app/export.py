@@ -19,11 +19,12 @@ def save_export_entry(
     edited=False,
     step=None,
     input_query=None,
-    rating=0
+    rating=0,
+    user_name="Unknown"
 ):
     if 'export_data' not in st.session_state:
         st.session_state.export_data = pd.DataFrame(columns=[
-            'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
+            'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
             'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query', 
             'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
         ])
@@ -32,6 +33,7 @@ def save_export_entry(
     unique_id = f"{mode}_{prompt_name}_{timestamp}_{uuid.uuid4()}"
     
     new_entry = pd.DataFrame([{
+        'user_name': user_name,
         'unique_id': unique_id,
         'test_type': mode,
         'prompt_name': prompt_name,
@@ -60,7 +62,7 @@ def render_export_section(query_text):
     
     if 'export_data' not in st.session_state:
         st.session_state.export_data = pd.DataFrame(columns=[
-            'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
+            'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
             'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query', 
             'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
         ])
@@ -91,12 +93,12 @@ def render_export_section(query_text):
     
     if st.button("🗑️ Clear All Results"):
         st.session_state.export_data = pd.DataFrame(columns=[
-            'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
+            'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
             'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query', 
             'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
         ])
         st.session_state.test_results = pd.DataFrame(columns=[
-            'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 
+            'user_name', 'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 
             'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
         ])
         st.session_state.chain_results = []
