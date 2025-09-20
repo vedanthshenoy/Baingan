@@ -3,7 +3,7 @@ import pandas as pd
 import io
 import uuid
 from datetime import datetime
-from app.score_predictor import predict_scores
+from app.score_predictor_llm import predict_scores_llm
 
 def save_export_entry(
     prompt_name,
@@ -89,11 +89,14 @@ def render_export_section(query_text):
                         st.session_state.test_results['edited'] = st.session_state.test_results['edited'].fillna(False).astype(bool)
                         st.session_state.test_results['remark'] = st.session_state.test_results['remark'].fillna('')
                     
-                    # Apply predictions
-                    st.session_state.export_data = predict_scores(st.session_state.export_data)
-                    if 'test_results' in st.session_state and not st.session_state.test_results.empty:
-                        st.session_state.test_results = predict_scores(st.session_state.test_results)
-                    st.success("Predicted ratings for unrated prompts!")
+                    # Apply predictions using LLM
+                    try:
+                        st.session_state.export_data = predict_scores_llm(st.session_state.export_data)
+                        if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                            st.session_state.test_results = predict_scores_llm(st.session_state.test_results)
+                        st.success("Predicted ratings for unrated prompts using LLM!")
+                    except Exception as e:
+                        st.error(f"Error predicting scores: {str(e)}")
                     st.rerun()
         
         csv = st.session_state.export_data.to_csv(index=False)
