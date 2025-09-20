@@ -45,7 +45,7 @@ def save_export_entry(
         'status_code': str(status_code),
         'timestamp': timestamp,
         'edited': edited,
-        'step': step if step is not None else '',
+        'step': str(step) if step is not None else '',
         'input_query': input_query if input_query is not None else '',
         'combination_strategy': combination_strategy if combination_strategy is not None else '',
         'combination_temperature': combination_temperature if combination_temperature is not None else '',
