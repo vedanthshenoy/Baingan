@@ -26,17 +26,14 @@ st.set_page_config(
     layout="wide"
 )
 
-# Check if user is logged in
-if not render_auth_page():
-    st.stop()  # Stop rendering the rest of the app if not logged in
-
 # Initialize session state defaults with consistent columns
 defaults = {
     "prompts": [],
     "prompt_names": [],
     "test_results": pd.DataFrame(columns=[
-        'user_name', 'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 'status', 'status_code', 
-        'timestamp', 'rating', 'remark', 'edited'
+        'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
+        'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited', 'step', 'input_query',
+        'combination_strategy', 'combination_temperature'
     ]),
     "chain_results": [],
     "combination_results": {},
@@ -53,6 +50,10 @@ defaults = {
 for key, val in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = val
+
+# Check if user is authenticated
+if not render_auth_page():
+    st.stop()  # Stop rendering the rest of the app if not authenticated
 
 # Title
 st.title("🔮 BainGan 🍆")
@@ -166,7 +167,7 @@ with col2:
     elif test_mode == "Prompt Chaining":
         render_prompt_chaining(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, user_name=user_name)
     elif test_mode == "Prompt Combination":
-        render_prompt_combination(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, st.session_state.get("gemini_api_key"), user_name=user_name)
+        render_prompt_combination(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, st.session_state.get("gemini_api_key", ""), user_name=user_name)
 
 render_export_section(query_text)
 
