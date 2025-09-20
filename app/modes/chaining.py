@@ -66,6 +66,46 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
 
         return uid
 
+    # 🔀 Reorder prompts (arrow-based UI)
+    if "chain_order" not in st.session_state:
+        st.session_state.chain_order = list(range(len(st.session_state.get("prompts", []))))
+
+    # keep chain_order in sync with prompts length
+    prompts_len = len(st.session_state.get("prompts", []))
+    st.session_state.chain_order = [i for i in st.session_state.chain_order if i < prompts_len]
+    for i in range(prompts_len):
+        if i not in st.session_state.chain_order:
+            st.session_state.chain_order.append(i)
+
+    st.subheader("🔀 Reorder Prompt Chain")
+    if st.session_state.get("prompts"):
+        st.write("Use the arrows to change the execution order of prompts (click Reset Order to restore default).")
+        for pos, idx in enumerate(st.session_state.chain_order):
+            prompt_name = st.session_state.prompt_names[idx] if idx < len(st.session_state.prompt_names) else f"Prompt {idx+1}"
+            cols = st.columns([0.5, 8, 1, 1])
+            cols[0].write(f"{pos+1}.")
+            cols[1].write(prompt_name)
+
+            # Move up
+            if cols[2].button("⬆️", key=f"up_{idx}", disabled=(pos == 0)):
+                st.session_state.chain_order[pos-1], st.session_state.chain_order[pos] = (
+                    st.session_state.chain_order[pos],
+                    st.session_state.chain_order[pos-1]
+                )
+                st.rerun()
+
+            # Move down
+            if cols[3].button("⬇️", key=f"down_{idx}", disabled=(pos == len(st.session_state.chain_order)-1)):
+                st.session_state.chain_order[pos+1], st.session_state.chain_order[pos] = (
+                    st.session_state.chain_order[pos],
+                    st.session_state.chain_order[pos+1]
+                )
+                st.rerun()
+
+        if st.button("Reset Order"):
+            st.session_state.chain_order = list(range(prompts_len))
+            st.rerun()
+
     # Test All Prompts in Chain
     if st.button("🚀 Test Chained Prompts", type="primary", disabled=not (api_url and st.session_state.get('prompts') and query_text)):
         if not api_url:
@@ -83,13 +123,19 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                 status_text = st.empty()
 
                 current_query = query_text  # Start with initial query
-                for i, (system_prompt, prompt_name) in enumerate(zip(st.session_state.prompts, st.session_state.prompt_names)):
-                    # Name intermediate steps
-                    step_name = f"intermediate_result_after_prompt_{prompt_name if prompt_name else i+1}"
-                    if i == total_prompts - 1:  # Final step
+
+                # 🔀 Run in chosen order
+                for step_num, idx in enumerate(st.session_state.chain_order, start=1):
+                    if idx >= len(st.session_state.prompts):
+                        continue
+                    system_prompt = st.session_state.prompts[idx]
+                    prompt_name = st.session_state.prompt_names[idx] if idx < len(st.session_state.prompt_names) else f"Prompt_{idx}"
+
+                    step_name = f"intermediate_result_after_prompt_{prompt_name if prompt_name else step_num}"
+                    if step_num == total_prompts:  # Final step
                         step_name = "final_step"
                     
-                    status_text.text(f"Testing {step_name} (Step {i+1}/{total_prompts})...")
+                    status_text.text(f"Testing {step_name} (Step {step_num}/{total_prompts})...")
 
                     try:
                         result = call_api_func(
@@ -119,9 +165,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         'status_code': status_code,
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'rating': 0,
-                        'remark': f'Chained step {i+1}',
+                        'remark': f'Chained step {step_num}',
                         'edited': False,
-                        'step': i + 1,
+                        'step': step_num,
                         'input_query': query_text,
                         'combination_strategy': None,
                         'combination_temperature': None,
@@ -134,11 +180,11 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         query=current_query,
                         response=response_text,
                         mode="Chaining",
-                        remark=f"Chained step {i+1}",
+                        remark=f"Chained step {step_num}",
                         status=status,
                         status_code=status_code,
                         rating=0,
-                        step=i + 1,
+                        step=step_num,
                         input_query=query_text,
                         user_name=user_name
                     )
@@ -154,10 +200,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         response=response_text,
                         status=status,
                         status_code=status_code,
-                        remark=f'Chained step {i+1}',
+                        remark=f'Chained step {step_num}',
                         rating=0,
                         edited=False,
-                        step=i + 1,
+                        step=step_num,
                         input_query=query_text,
                         combination_strategy=None,
                         combination_temperature=None,
@@ -170,7 +216,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
 
                     st.session_state.response_ratings[unique_id] = 0
                     current_query = response_text if response_text else current_query  # Use response as next query
-                    progress_bar.progress((i + 1) / total_prompts)
+                    progress_bar.progress((step_num) / total_prompts)
 
                     # Add delay to avoid rate-limiting
                     time.sleep(1)
@@ -195,7 +241,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             success_count = len(display_df[display_df['status'] == 'Success'])
             st.metric("Successful Chained Tests", f"{success_count}/{len(display_df)}")
 
-            for i, result in display_df.sort_values('step').iterrows():
+            sorted_df = display_df.sort_values(by=["input_query", "timestamp", "step"]).reset_index(drop=True)
+
+            for i, result in sorted_df.iterrows():
                 unique_id = result['unique_id']
                 prompt_name = result['prompt_name']
                 step = result['step']
