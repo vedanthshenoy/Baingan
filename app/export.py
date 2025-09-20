@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import uuid
 from datetime import datetime
+from app.score_predictor import predict_scores
 
 def save_export_entry(
     prompt_name,
@@ -70,6 +71,30 @@ def render_export_section(query_text):
     if not st.session_state.export_data.empty:
         st.subheader("📋 DataFrame Preview")
         st.dataframe(st.session_state.export_data, width='stretch')
+        
+        # Predict Scores button
+        if (st.session_state.export_data['rating'] > 0).any():
+            rated_count = len(st.session_state.export_data[(st.session_state.export_data['rating'] > 0) & (st.session_state.export_data['edited'])])
+            if st.button("🔮 Predict Scores"):
+                if rated_count < 2:
+                    st.warning("Need at least two rated prompts (rating > 0) to predict scores.")
+                else:
+                    # Ensure test_results has necessary columns
+                    if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                        required_columns = ['system_prompt', 'response', 'rating', 'edited', 'remark']
+                        for col in required_columns:
+                            if col not in st.session_state.test_results.columns:
+                                st.session_state.test_results[col] = None
+                        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
+                        st.session_state.test_results['edited'] = st.session_state.test_results['edited'].fillna(False).astype(bool)
+                        st.session_state.test_results['remark'] = st.session_state.test_results['remark'].fillna('')
+                    
+                    # Apply predictions
+                    st.session_state.export_data = predict_scores(st.session_state.export_data)
+                    if 'test_results' in st.session_state and not st.session_state.test_results.empty:
+                        st.session_state.test_results = predict_scores(st.session_state.test_results)
+                    st.success("Predicted ratings for unrated prompts!")
+                    st.rerun()
         
         csv = st.session_state.export_data.to_csv(index=False)
         st.download_button(
