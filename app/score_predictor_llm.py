@@ -16,9 +16,12 @@ genai.configure(api_key=gemini_api_key)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
 def predict_scores_llm(df):
-    # Filter rated (rating > 0 and edited) and unrated (rating == 0 and not edited)
+    # Ensure rating column is Int64 to support NaN
+    df['rating'] = df['rating'].astype('Int64')
+    
+    # Filter rated (rating > 0 and edited) and unrated (rating is NaN)
     rated_df = df[(df['rating'] > 0) & df['edited']].head(5)  # Use up to 5 examples
-    unrated_df = df[(df['rating'] == 0) & ~df['edited']]
+    unrated_df = df[df['rating'].isna()]
     
     if len(rated_df) < 2:
         raise ValueError("Need at least two rated prompts to predict scores using LLM.")
