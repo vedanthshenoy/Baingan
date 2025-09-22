@@ -22,16 +22,16 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
     if 'export_data' not in st.session_state or not isinstance(st.session_state.export_data, pd.DataFrame):
         st.session_state.export_data = pd.DataFrame(columns=[
             'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
-            'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query',
+            'status', 'status_code', 'timestamp', 'edited', 'step',
             'combination_strategy', 'combination_temperature', 'slider_weights',
             'rating', 'remark'
         ])
 
     # Session state cleanup
-    if 'response_ratings' not in st.session_state:
+    if 'response_ratings' not in st.session_state or not isinstance(st.session_state.response_ratings, dict):
         st.session_state.response_ratings = {}
     if 'test_results' in st.session_state and isinstance(st.session_state.test_results, pd.DataFrame):
-        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
+        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].astype('Int64')
         st.session_state.test_results = st.session_state.test_results[
             st.session_state.test_results['response'].notnull() & st.session_state.test_results['status'].notnull()
         ].reset_index(drop=True)
@@ -62,7 +62,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             if generated_uid and generated_uid in st.session_state.response_ratings:
                 st.session_state.response_ratings[uid] = st.session_state.response_ratings.pop(generated_uid)
             else:
-                st.session_state.response_ratings[uid] = export_row_dict.get('rating', 0) or 0
+                st.session_state.response_ratings[uid] = export_row_dict.get('rating')
 
         return uid
 
@@ -164,11 +164,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         'status': status,
                         'status_code': status_code,
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'rating': 0,
+                        'rating': None,
                         'remark': f'Chained step {step_num}',
                         'edited': False,
                         'step': step_num,
-                        'input_query': query_text,
                         'combination_strategy': None,
                         'combination_temperature': None,
                         'slider_weights': None
@@ -183,9 +182,8 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         remark=f"Chained step {step_num}",
                         status=status,
                         status_code=status_code,
-                        rating=0,
+                        rating=None,
                         step=step_num,
-                        input_query=query_text,
                         user_name=user_name
                     )
 
@@ -201,10 +199,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         status=status,
                         status_code=status_code,
                         remark=f'Chained step {step_num}',
-                        rating=0,
+                        rating=None,
                         edited=False,
                         step=step_num,
-                        input_query=query_text,
                         combination_strategy=None,
                         combination_temperature=None,
                         user_name=user_name
@@ -214,7 +211,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     if st.session_state.test_results.at[last_index, 'unique_id'] != unique_id:
                         st.session_state.test_results.at[last_index, 'unique_id'] = unique_id
 
-                    st.session_state.response_ratings[unique_id] = 0
+                    st.session_state.response_ratings[unique_id] = None
                     current_query = response_text if response_text else current_query  # Use response as next query
                     progress_bar.progress((step_num) / total_prompts)
 
@@ -241,7 +238,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             success_count = len(display_df[display_df['status'] == 'Success'])
             st.metric("Successful Chained Tests", f"{success_count}/{len(display_df)}")
 
-            sorted_df = display_df.sort_values(by=["input_query", "timestamp", "step"]).reset_index(drop=True)
+            sorted_df = display_df.sort_values(by=["timestamp", "step"]).reset_index(drop=True)
 
             for i, result in sorted_df.iterrows():
                 unique_id = result['unique_id']
@@ -262,7 +259,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     )
 
                     # Rating slider
-                    current_rating = st.session_state.response_ratings.get(unique_id, int(result.get('rating', 0) or 0))
+                    current_rating = st.session_state.response_ratings.get(unique_id)
+                    if pd.isna(current_rating) or current_rating is None:
+                        current_rating = 0
                     new_rating = st.slider(
                         "Rate this response (0-10):",
                         min_value=0,
@@ -302,7 +301,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     'remark': f'Edited chained step {step}',
                                     'edited': True,
                                     'step': step,
-                                    'input_query': result['input_query'],
                                     'combination_strategy': None,
                                     'combination_temperature': None,
                                     'slider_weights': None
@@ -320,7 +318,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     rating=new_rating,
                                     edited=True,
                                     step=step,
-                                    input_query=result['input_query'],
                                     user_name=user_name
                                 )
 
@@ -355,7 +352,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             'remark': f'Reverse engineered for step {step}',
                                             'edited': True,
                                             'step': step,
-                                            'input_query': result['input_query'],
                                             'combination_strategy': None,
                                             'combination_temperature': None,
                                             'slider_weights': None
@@ -373,7 +369,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             rating=new_rating,
                                             edited=True,
                                             step=step,
-                                            input_query=result['input_query'],
                                             user_name=user_name
                                         )
 
@@ -426,11 +421,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         'status': 'Not Executed',
                                         'status_code': 'N/A',
                                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        'rating': 0,
+                                        'rating': None,
                                         'remark': f'Save only for step {step}',
                                         'edited': False,
                                         'step': step,
-                                        'input_query': result['input_query'],
                                         'combination_strategy': None,
                                         'combination_temperature': None,
                                         'slider_weights': None
@@ -445,9 +439,8 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         remark=f"Save only for step {step}",
                                         status='Not Executed',
                                         status_code='N/A',
-                                        rating=0,
+                                        rating=None,
                                         step=step,
-                                        input_query=result['input_query'],
                                         user_name=user_name
                                     )
 
@@ -463,10 +456,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         status='Not Executed',
                                         status_code='N/A',
                                         remark=f'Save only for step {step}',
-                                        rating=0,
+                                        rating=None,
                                         edited=False,
                                         step=step,
-                                        input_query=result['input_query'],
                                         combination_strategy=None,
                                         combination_temperature=None,
                                         user_name=user_name
@@ -476,7 +468,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
                                         st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
 
-                                    st.session_state.response_ratings[saved_unique_id] = 0
+                                    st.session_state.response_ratings[saved_unique_id] = None
                                     st.session_state.prompts.append(st.session_state[f"suggested_prompt_{unique_id}"])
                                     st.session_state.prompt_names.append(save_prompt_name.strip())
                                     del st.session_state[f"suggested_prompt_{unique_id}"]
@@ -529,7 +521,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             'remark': f'Saved and ran for step {step}',
                                             'edited': False,
                                             'step': step,
-                                            'input_query': result['input_query'],
                                             'combination_strategy': None,
                                             'combination_temperature': None,
                                             'slider_weights': None
@@ -544,9 +535,8 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             remark=f'Saved and ran for step {step}',
                                             status=status,
                                             status_code=status_code,
-                                            rating=0,
+                                            rating=None,
                                             step=step,
-                                            input_query=result['input_query'],
                                             user_name=user_name
                                         )
 
@@ -562,10 +552,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             status=status,
                                             status_code=status_code,
                                             remark=f'Saved and ran for step {step}',
-                                            rating=0,
+                                            rating=None,
                                             edited=False,
                                             step=step,
-                                            input_query=result['input_query'],
                                             combination_strategy=None,
                                             combination_temperature=None,
                                             user_name=user_name
@@ -615,7 +604,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             'remark': f'Save only for step {step}',
                                             'edited': False,
                                             'step': step,
-                                            'input_query': result['input_query'],
                                             'combination_strategy': None,
                                             'combination_temperature': None,
                                             'slider_weights': None
@@ -630,9 +618,8 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             remark=f"Save only for step {step}",
                                             status='Not Executed',
                                             status_code='N/A',
-                                            rating=0,
+                                            rating=None,
                                             step=step,
-                                            input_query=result['input_query'],
                                             user_name=user_name
                                         )
 
@@ -648,10 +635,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             status='Not Executed',
                                             status_code='N/A',
                                             remark=f'Save only for step {step}',
-                                            rating=0,
+                                            rating=None,
                                             edited=False,
                                             step=step,
-                                            input_query=result['input_query'],
                                             combination_strategy=None,
                                             combination_temperature=None,
                                             user_name=user_name
@@ -673,10 +659,11 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         st.error("Please provide a prompt name")
 
                     st.write("**Details:**")
+                    rating = st.session_state.response_ratings.get(unique_id, result.get('rating'))
+                    rating_display = f"{rating}/10 ({rating*10}%)" if rating is not None else "Not rated yet"
                     st.write(
                         f"Status Code: {result['status_code']} | "
                         f"Time: {result['timestamp']} | "
                         f"Step: {step} | "
-                        f"Rating: {st.session_state.response_ratings.get(unique_id, result.get('rating', 0))}/10 "
-                        f"({st.session_state.response_ratings.get(unique_id, result.get('rating', 0))*10}%)"
+                        f"Rating: {rating_display}"
                     )
