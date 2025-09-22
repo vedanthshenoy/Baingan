@@ -22,10 +22,10 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
     if 'export_data' not in st.session_state or not isinstance(st.session_state.export_data, pd.DataFrame):
         st.session_state.export_data = pd.DataFrame(columns=[
             'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
-            'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query',
+            'status', 'status_code', 'timestamp', 'edited', 'step',
             'combination_strategy', 'combination_temperature', 'slider_weights',
             'rating', 'remark'
-        ]).astype({'step': 'str', 'rating': 'int', 'edited': 'bool', 'timestamp': 'str', 'status_code': 'str'})
+        ]).astype({'step': 'str', 'rating': 'Int64', 'edited': 'bool', 'timestamp': 'str', 'status_code': 'str'})
 
     # Session state cleanup
     if 'response_ratings' not in st.session_state:
@@ -33,20 +33,20 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
     if 'test_results' not in st.session_state or not isinstance(st.session_state.test_results, pd.DataFrame):
         st.session_state.test_results = pd.DataFrame(columns=[
             'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
-            'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query',
+            'status', 'status_code', 'timestamp', 'edited', 'step',
             'combination_strategy', 'combination_temperature', 'rating', 'remark'
         ]).astype({'step': 'str', 'rating': 'int', 'edited': 'bool', 'timestamp': 'str', 'status_code': 'str'})
     elif isinstance(st.session_state.test_results, pd.DataFrame):
         # Ensure all expected columns exist
         expected_columns = ['user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
-                            'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query',
+                            'status', 'status_code', 'timestamp', 'edited', 'step',
                             'combination_strategy', 'combination_temperature', 'rating', 'remark']
         for col in expected_columns:
             if col not in st.session_state.test_results.columns:
                 st.session_state.test_results[col] = None
 
         # Apply type conversions and fill missing values
-        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
+        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].astype('Int64')
         st.session_state.test_results['step'] = st.session_state.test_results['step'].astype(str).fillna('')
         st.session_state.test_results['status_code'] = st.session_state.test_results['status_code'].astype(str).fillna('N/A')
         st.session_state.test_results['edited'] = st.session_state.test_results['edited'].astype(bool).fillna(False)
@@ -78,7 +78,7 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
                 row['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             row['step'] = str(row.get('step', ''))  # Ensure step is string
             row['status_code'] = str(row.get('status_code', 'N/A'))
-            row['rating'] = int(row.get('rating', 0))
+            row['rating'] = row.get('rating')
             row['edited'] = bool(row.get('edited', False))
             for col in st.session_state.export_data.columns:
                 if col not in row:
@@ -89,7 +89,7 @@ def render_prompt_combination(api_url, query_text, body_template, headers, respo
             if generated_uid and generated_uid in st.session_state.response_ratings:
                 st.session_state.response_ratings[uid] = st.session_state.response_ratings.pop(generated_uid)
             else:
-                st.session_state.response_ratings[uid] = export_row_dict.get('rating', 0) or 0
+                    st.session_state.response_ratings[uid] = export_row_dict.get('rating')
 
         return uid
 
@@ -312,11 +312,10 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         'status': status,
                         'status_code': status_code,
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'rating': 0,
+                        'rating': None,
                         'remark': 'Individual prompt in combination test',
                         'edited': False,
                         'step': '',
-                        'input_query': query_text,
                         'combination_strategy': combination_strategy,
                         'combination_temperature': temperature,
                         'slider_weights': st.session_state.slider_weights if combination_strategy == "Slider - Custom influence weights" else None
@@ -331,9 +330,8 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         remark="Individual prompt in combination test",
                         status=status,
                         status_code=status_code,
-                        rating=0,
+                        rating=None,
                         step='',
-                        input_query=query_text,
                         combination_strategy=combination_strategy,
                         combination_temperature=temperature,
                         slider_weights=st.session_state.slider_weights if combination_strategy == "Slider - Custom influence weights" else None,
@@ -352,10 +350,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         status=status,
                         status_code=status_code,
                         remark='Individual prompt in combination test',
-                        rating=0,
+                        rating=None,
                         edited=False,
                         step='',
-                        input_query=query_text,
                         combination_strategy=combination_strategy,
                         combination_temperature=temperature,
                         user_name=user_name
@@ -365,7 +362,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                     if st.session_state.test_results.at[last_index, 'unique_id'] != unique_id:
                         st.session_state.test_results.at[last_index, 'unique_id'] = unique_id
 
-                    st.session_state.response_ratings[unique_id] = 0
+                    st.session_state.response_ratings[unique_id] = None
 
                     individual_results.append({
                         'prompt_name': prompt_name,
@@ -419,7 +416,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                     'remark': 'Combined prompt test',
                     'edited': False,
                     'step': '',
-                    'input_query': query_text,
                     'combination_strategy': combination_strategy,
                     'combination_temperature': temperature,
                     'slider_weights': st.session_state.slider_weights if combination_strategy == "Slider - Custom influence weights" else None
@@ -434,9 +430,8 @@ Output ONLY the combined system prompt, without any additional text or explanati
                     remark="Combined prompt test",
                     status=status,
                     status_code=status_code,
-                    rating=0,
+                    rating=None,
                     step='',
-                    input_query=query_text,
                     combination_strategy=combination_strategy,
                     combination_temperature=temperature,
                     slider_weights=st.session_state.slider_weights if combination_strategy == "Slider - Custom influence weights" else None,
@@ -455,10 +450,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                     status=status,
                     status_code=status_code,
                     remark='Combined prompt test',
-                    rating=0,
+                    rating=None,
                     edited=False,
                     step='',
-                    input_query=query_text,
                     combination_strategy=combination_strategy,
                     combination_temperature=temperature,
                     user_name=user_name
@@ -468,7 +462,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                 if st.session_state.test_results.at[last_index, 'unique_id'] != unique_id:
                     st.session_state.test_results.at[last_index, 'unique_id'] = unique_id
 
-                st.session_state.response_ratings[unique_id] = 0
+                st.session_state.response_ratings[unique_id] = None
 
                 st.session_state.combination_results['combined_result'] = {
                     'prompt_name': 'Combined Prompt',
@@ -477,7 +471,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                     'status': status,
                     'status_code': status_code,
                     'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'rating': 0,
+                    'rating': None,
                     'remark': 'Combined prompt test',
                     'edited': False,
                     'unique_id': unique_id
@@ -511,7 +505,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                     )
 
                     # Dynamic rating update
-                    live_rating = st.session_state.response_ratings.get(unique_id, individual_result.get('rating', 0))
+                    live_rating = st.session_state.response_ratings.get(unique_id, individual_result.get('rating'))
+                    if pd.isna(live_rating) or live_rating is None:
+                        live_rating = 0
                     rating_value = st.slider(
                         "Rate this response (0-10):",
                         min_value=0,
@@ -551,7 +547,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                 slider_weights=st.session_state.combination_results.get('slider_weights'),
                                 rating=st.session_state.response_ratings.get(unique_id, 0),
                                 step=str(individual_result.get('step')) if individual_result.get('step') else '',
-                                input_query=query_text,
                                 edited=True,
                                 user_name=user_name
                             )
@@ -611,7 +606,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         'remark': 'Saved only',
                                         'edited': False,
                                         'step': '',
-                                        'input_query': query_text,
                                         'combination_strategy': st.session_state.combination_results.get('strategy'),
                                         'combination_temperature': temperature,
                                         'slider_weights': st.session_state.combination_results.get('slider_weights')
@@ -626,9 +620,8 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         remark="Saved only",
                                         status='Not Executed',
                                         status_code='N/A',
-                                        rating=0,
+                                        rating=None,
                                         step='',
-                                        input_query=query_text,
                                         combination_strategy=st.session_state.combination_results.get('strategy'),
                                         combination_temperature=temperature,
                                         slider_weights=st.session_state.combination_results.get('slider_weights'),
@@ -647,10 +640,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         status='Not Executed',
                                         status_code='N/A',
                                         remark='Saved only',
-                                        rating=0,
+                                        rating=None,
                                         edited=False,
                                         step='',
-                                        input_query=query_text,
                                         combination_strategy=st.session_state.combination_results.get('strategy'),
                                         combination_temperature=temperature,
                                         user_name=user_name
@@ -713,7 +705,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                             'remark': 'Saved and ran suggested prompt',
                                             'edited': False,
                                             'step': '',
-                                            'input_query': query_text,
                                             'combination_strategy': st.session_state.combination_results.get('strategy'),
                                             'combination_temperature': temperature,
                                             'slider_weights': st.session_state.combination_results.get('slider_weights')
@@ -728,9 +719,8 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                             remark="Saved and ran suggested prompt",
                                             status=status,
                                             status_code=status_code,
-                                            rating=0,
+                                            rating=None,
                                             step='',
-                                            input_query=query_text,
                                             combination_strategy=st.session_state.combination_results.get('strategy'),
                                             combination_temperature=temperature,
                                             slider_weights=st.session_state.combination_results.get('slider_weights'),
@@ -749,10 +739,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                             status=status,
                                             status_code=status_code,
                                             remark='Saved and ran suggested prompt',
-                                            rating=0,
+                                            rating=None,
                                             edited=False,
                                             step='',
-                                            input_query=query_text,
                                             combination_strategy=st.session_state.combination_results.get('strategy'),
                                             combination_temperature=temperature,
                                             user_name=user_name
@@ -818,7 +807,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                             'remark': 'Save only',
                                             'edited': False,
                                             'step': '',
-                                            'input_query': query_text,
                                             'combination_strategy': st.session_state.combination_results.get('strategy'),
                                             'combination_temperature': temperature,
                                             'slider_weights': st.session_state.combination_results.get('slider_weights')
@@ -833,9 +821,8 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                             remark="Save only",
                                             status='Not Executed',
                                             status_code='N/A',
-                                            rating=0,
+                                            rating=None,
                                             step='',
-                                            input_query=query_text,
                                             combination_strategy=st.session_state.combination_results.get('strategy'),
                                             combination_temperature=temperature,
                                             slider_weights=st.session_state.combination_results.get('slider_weights'),
@@ -854,10 +841,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                             status='Not Executed',
                                             status_code='N/A',
                                             remark='Save only',
-                                            rating=0,
+                                            rating=None,
                                             edited=False,
                                             step='',
-                                            input_query=query_text,
                                             combination_strategy=st.session_state.combination_results.get('strategy'),
                                             combination_temperature=temperature,
                                             user_name=user_name
@@ -879,10 +865,12 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         st.error("Please provide a prompt name")
 
                     st.write("**Details:**")
+                    rating = st.session_state.response_ratings.get(unique_id, individual_result.get('rating'))
+                    rating_display = f"{rating}/10" if rating is not None else "Not rated yet"
                     st.write(
                         f"Status Code: {individual_result.get('status_code', 'N/A')} | "
                         f"Time: {individual_result.get('timestamp', 'N/A')} | "
-                        f"Rating: {st.session_state.response_ratings.get(unique_id, individual_result.get('rating', 0))}/10"
+                        f"Rating: {rating_display}"
                     )
 
     # Display Combined Result if exists
@@ -907,7 +895,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                 )
 
                 # Dynamic rating update
-                live_rating = st.session_state.response_ratings.get(unique_id, combined_result.get('rating', 0))
+                live_rating = st.session_state.response_ratings.get(unique_id, combined_result.get('rating'))
+                if pd.isna(live_rating) or live_rating is None:
+                    live_rating = 0
                 rating_value = st.slider(
                     "Rate this response (0-10):",
                     min_value=0,
@@ -947,7 +937,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                             slider_weights=st.session_state.combination_results.get('slider_weights'),
                             rating=st.session_state.response_ratings.get(unique_id, 0),
                             step=str(combined_result.get('step')) if combined_result.get('step') else '',
-                            input_query=query_text,
                             edited=True,
                             user_name=user_name
                         )
@@ -1007,7 +996,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     'remark': 'Saved only',
                                     'edited': False,
                                     'step': '',
-                                    'input_query': query_text,
                                     'combination_strategy': st.session_state.combination_results.get('strategy'),
                                     'combination_temperature': temperature,
                                     'slider_weights': st.session_state.combination_results.get('slider_weights')
@@ -1022,9 +1010,8 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     remark="Saved only",
                                     status='Not Executed',
                                     status_code='N/A',
-                                    rating=0,
+                                    rating=None,
                                     step='',
-                                    input_query=query_text,
                                     combination_strategy=st.session_state.combination_results.get('strategy'),
                                     combination_temperature=temperature,
                                     slider_weights=st.session_state.combination_results.get('slider_weights'),
@@ -1043,10 +1030,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     status='Not Executed',
                                     status_code='N/A',
                                     remark='Saved only',
-                                    rating=0,
+                                    rating=None,
                                     edited=False,
                                     step='',
-                                    input_query=query_text,
                                     combination_strategy=st.session_state.combination_results.get('strategy'),
                                     combination_temperature=temperature,
                                     user_name=user_name
@@ -1109,7 +1095,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         'remark': 'Saved and ran suggested prompt',
                                         'edited': False,
                                         'step': '',
-                                        'input_query': query_text,
                                         'combination_strategy': st.session_state.combination_results.get('strategy'),
                                         'combination_temperature': temperature,
                                         'slider_weights': st.session_state.combination_results.get('slider_weights')
@@ -1124,9 +1109,8 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         remark="Saved and ran suggested prompt",
                                         status=status,
                                         status_code=status_code,
-                                        rating=0,
+                                        rating=None,
                                         step='',
-                                        input_query=query_text,
                                         combination_strategy=st.session_state.combination_results.get('strategy'),
                                         combination_temperature=temperature,
                                         slider_weights=st.session_state.combination_results.get('slider_weights'),
@@ -1145,10 +1129,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         status=status,
                                         status_code=status_code,
                                         remark='Saved and ran suggested prompt',
-                                        rating=0,
+                                        rating=None,
                                         edited=False,
                                         step='',
-                                        input_query=query_text,
                                         combination_strategy=st.session_state.combination_results.get('strategy'),
                                         combination_temperature=temperature,
                                         user_name=user_name
@@ -1214,7 +1197,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         'remark': 'Save only',
                                         'edited': False,
                                         'step': '',
-                                        'input_query': query_text,
                                         'combination_strategy': st.session_state.combination_results.get('strategy'),
                                         'combination_temperature': temperature,
                                         'slider_weights': st.session_state.combination_results.get('slider_weights')
@@ -1229,9 +1211,8 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         remark="Save only",
                                         status='Not Executed',
                                         status_code='N/A',
-                                        rating=0,
+                                        rating=None,
                                         step='',
-                                        input_query=query_text,
                                         combination_strategy=st.session_state.combination_results.get('strategy'),
                                         combination_temperature=temperature,
                                         slider_weights=st.session_state.combination_results.get('slider_weights'),
@@ -1250,10 +1231,9 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         status='Not Executed',
                                         status_code='N/A',
                                         remark='Save only',
-                                        rating=0,
+                                        rating=None,
                                         edited=False,
                                         step='',
-                                        input_query=query_text,
                                         combination_strategy=st.session_state.combination_results.get('strategy'),
                                         combination_temperature=temperature,
                                         user_name=user_name
@@ -1275,10 +1255,12 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     st.error("Please provide a prompt name")
 
                 st.write("**Details:**")
+                rating = st.session_state.response_ratings.get(unique_id, combined_result.get('rating'))
+                rating_display = f"{rating}/10" if rating is not None else "Not rated yet"
                 st.write(
                     f"Status Code: {combined_result.get('status_code', 'N/A')} | "
                     f"Time: {combined_result.get('timestamp', 'N/A')} | "
-                    f"Rating: {st.session_state.response_ratings.get(unique_id, combined_result.get('rating', 0))}/10"
+                    f"Rating: {rating_display}"
                 )
 
                 # Display Suggested Results immediately below Combined Prompt Result
@@ -1344,7 +1326,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                             slider_weights=st.session_state.combination_results.get('slider_weights'),
                                             rating=st.session_state.response_ratings.get(unique_id, 0),
                                             step=str(suggested_result.get('step')) if suggested_result.get('step') else '',
-                                            input_query=query_text,
                                             edited=True,
                                             user_name=user_name
                                         )
