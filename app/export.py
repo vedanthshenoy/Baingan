@@ -52,7 +52,11 @@ def save_export_entry(
         'remark': remark
     }])
     
-    st.session_state.export_data = pd.concat([st.session_state.export_data, new_entry], ignore_index=True)
+    if st.session_state.export_data.empty:
+        st.session_state.export_data = new_entry
+    else:
+        st.session_state.export_data = pd.concat([st.session_state.export_data, new_entry], ignore_index=True)
+
     st.write(f"Added {mode} result: {unique_id}")
     return unique_id
 

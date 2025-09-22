@@ -51,4 +51,4 @@ def add_result_row(
         'combination_temperature': combination_temperature,
     }])
 
-    st.session_state.test_results = pd.concat([st.session_state.test_results, new_entry], ignore_index=True)
+    st.session_state.test_results = pd.concat([df for df in [st.session_state.test_results, new_entry] if not df.empty], ignore_index=True)
