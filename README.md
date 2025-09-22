@@ -112,7 +112,7 @@ Here’s a simple example of how a new user might use this app:
 | Run prompts individually, chained, or combined | ✔️ |
 | Slider to assign weight/importance to prompts | ✔️ |
 | Edit output & get recommended prompt changes | ✔️ |
-| Score (%) of how likely existing prompts produce edited output | X |
+| Score (%) of how likely existing prompts produce edited output | ✔️ |
 | Export results (dataframe/Excel) | ✔️ |
 | Submit score to a response | ✔️ |
 | Visualize which prompt influenced which part of output | ⚙️ Experimental |
