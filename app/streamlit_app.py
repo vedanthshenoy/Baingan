@@ -32,7 +32,7 @@ defaults = {
     "prompt_names": [],
     "test_results": pd.DataFrame(columns=[
         'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
-        'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited', 'step', 'input_query',
+        'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited', 'step',
         'combination_strategy', 'combination_temperature'
     ]),
     "chain_results": [],
@@ -42,7 +42,7 @@ defaults = {
     "response_ratings": {},
     "export_data": pd.DataFrame(columns=[
         'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
-        'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query', 
+        'status', 'status_code', 'timestamp', 'edited', 'step',
         'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
     ]),
     "prompt_input_key_suffix": str(uuid.uuid4())  # Unique key for prompt input widgets

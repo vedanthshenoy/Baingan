@@ -12,10 +12,10 @@ def add_result_row(
     status,
     status_code,
     remark,
-    rating=0,
+    rating=None,
     edited=False,
     step=None,
-    input_query=None,
+
     combination_strategy=None,
     combination_temperature=None,
     user_name="Unknown"
@@ -26,9 +26,9 @@ def add_result_row(
         st.session_state.test_results = pd.DataFrame(columns=[
             'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query',
             'response', 'status', 'status_code', 'timestamp', 'rating',
-            'remark', 'edited', 'step', 'input_query',
+            'remark', 'edited', 'step',
             'combination_strategy', 'combination_temperature'
-        ])
+        ]).astype({'rating': 'Int64'})
 
     unique_id = f"{test_type}_{prompt_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
 
@@ -47,7 +47,6 @@ def add_result_row(
         'remark': remark,
         'edited': edited,
         'step': step,
-        'input_query': input_query,
         'combination_strategy': combination_strategy,
         'combination_temperature': combination_temperature,
     }])
