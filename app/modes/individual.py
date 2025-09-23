@@ -1,5 +1,3 @@
-# individual.py (patched: uses save_export_entry for all saves, updates export_data live,
-# no per-row preview; ratings update dynamically in export preview table)
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -75,11 +73,13 @@ def render_individual_testing(
     response_path,
     call_api_func=None,
     suggest_func=None,
+    user_name="Unknown"
 ):
     """
     Individual testing UI.
     call_api_func: function(system_prompt, query, body_template, headers, response_path) -> dict
     suggest_func: function(response_text, original_query) -> str
+    user_name: str, name of the logged-in user
     """
 
     st.header("🧪 Individual Testing")
@@ -89,25 +89,30 @@ def render_individual_testing(
 
     # Expected schema for both test_results and export_data
     expected_columns = [
-        'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
-        'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
+        'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
+        'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited', 'step',
+        'combination_strategy', 'combination_temperature'
     ]
 
     # Ensure test_results exists and has expected columns
     if 'test_results' not in st.session_state or not isinstance(st.session_state.test_results, pd.DataFrame):
         st.session_state.test_results = pd.DataFrame(columns=expected_columns)
+        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].astype('Int64')
     else:
         for c in expected_columns:
             if c not in st.session_state.test_results.columns:
                 st.session_state.test_results[c] = None
+        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].astype('Int64')
 
     # Ensure export_data exists and has expected columns (export.py depends on this)
     if 'export_data' not in st.session_state or not isinstance(st.session_state.export_data, pd.DataFrame):
         st.session_state.export_data = pd.DataFrame(columns=expected_columns)
+        st.session_state.export_data['rating'] = st.session_state.export_data['rating'].astype('Int64')
     else:
         for c in expected_columns:
             if c not in st.session_state.export_data.columns:
                 st.session_state.export_data[c] = None
+        st.session_state.export_data['rating'] = st.session_state.export_data['rating'].astype('Int64')
 
     if 'response_ratings' not in st.session_state or not isinstance(st.session_state.response_ratings, dict):
         st.session_state.response_ratings = {}
@@ -163,14 +168,16 @@ def render_individual_testing(
                         remark="Saved and ran",
                         status=status,
                         status_code=status_code,
-                        rating=0,
-                        edited=False
+                        rating=None,  # Start with None instead of 0
+                        edited=False,
+                        user_name=user_name
                     )
 
                     # register default rating for this unique_id
-                    st.session_state.response_ratings[unique_id] = 0
+                    st.session_state.response_ratings[unique_id] = None
 
                     new_result = pd.DataFrame([{
+                        'user_name': user_name,
                         'unique_id': unique_id,
                         'test_type': 'Individual',
                         'prompt_name': prompt_name,
@@ -180,7 +187,7 @@ def render_individual_testing(
                         'status': status,
                         'status_code': status_code,
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'rating': 0,
+                        'rating': None,  # Start with None instead of 0
                         'remark': 'Saved and ran',
                         'edited': False
                     }])
@@ -235,18 +242,26 @@ def render_individual_testing(
                 key=f"edit_response_{i}"
             )
 
-            # Rating slider linked to unique_id
-            current_rating = st.session_state.response_ratings.get(unique_id, int(result.get('rating', 0) or 0))
+            # Rating slider linked to unique_id - handle None ratings properly
+            current_rating = st.session_state.response_ratings.get(unique_id)
+            if current_rating is None:
+                current_rating = result.get('rating')
+            if pd.isna(current_rating) or current_rating is None:
+                current_rating = 0  # Default for slider display only
+            else:
+                current_rating = int(current_rating)
+            
             new_rating = st.slider(
                 "Rate this response (0-10):",
                 min_value=0,
                 max_value=10,
-                value=int(current_rating),
+                value=current_rating,
                 key=f"rating_{i}"
             )
 
-            # Update ratings dynamically in DataFrames
-            if new_rating != result.get('rating', 0):
+            # Update ratings dynamically in DataFrames only when rating actually changes
+            original_rating = result.get('rating')
+            if (pd.isna(original_rating) and new_rating != 0) or (pd.notna(original_rating) and new_rating != original_rating):
                 st.session_state.response_ratings[unique_id] = new_rating
                 st.session_state.test_results.at[i, 'rating'] = new_rating
                 st.session_state.test_results.at[i, 'edited'] = True
@@ -274,7 +289,8 @@ def render_individual_testing(
                         status=result.get('status', 'Unknown'),
                         status_code=result.get('status_code', 'N/A'),
                         rating=new_rating,
-                        edited=True
+                        edited=True,
+                        user_name=user_name
                     )
 
                     # register rating for the saved_unique_id
@@ -322,12 +338,13 @@ def render_individual_testing(
                             remark='Saved only',
                             status='Not Executed',
                             status_code='N/A',
-                            rating=0,
-                            edited=False
+                            rating=None,  # Start with None instead of 0
+                            edited=False,
+                            user_name=user_name
                         )
 
                         # register rating default for this new row
-                        st.session_state.response_ratings[saved_unique_id] = 0
+                        st.session_state.response_ratings[saved_unique_id] = None
 
                         # add to prompts list
                         st.session_state.prompts.append(suggested_prompt)
@@ -335,6 +352,7 @@ def render_individual_testing(
 
                         # append to test_results
                         new_result = pd.DataFrame([{
+                            'user_name': user_name,
                             'unique_id': saved_unique_id,
                             'test_type': 'Individual',
                             'prompt_name': saved_name,
@@ -344,7 +362,7 @@ def render_individual_testing(
                             'status': 'Not Executed',
                             'status_code': 'N/A',
                             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            'rating': 0,
+                            'rating': None,  # Start with None instead of 0
                             'remark': 'Saved only',
                             'edited': False
                         }])
@@ -388,12 +406,13 @@ def render_individual_testing(
                                 remark='Saved and ran',
                                 status=status,
                                 status_code=status_code,
-                                rating=0,
-                                edited=False
+                                rating=None,  # Start with None instead of 0
+                                edited=False,
+                                user_name=user_name
                             )
 
                             # register rating default for this new row
-                            st.session_state.response_ratings[saved_unique_id] = 0
+                            st.session_state.response_ratings[saved_unique_id] = None
 
                             # add to prompts list
                             st.session_state.prompts.append(suggested_prompt)
@@ -401,6 +420,7 @@ def render_individual_testing(
 
                             # append to test_results
                             new_result = pd.DataFrame([{
+                                'user_name': user_name,
                                 'unique_id': saved_unique_id,
                                 'test_type': 'Individual',
                                 'prompt_name': saved_name,
@@ -410,7 +430,7 @@ def render_individual_testing(
                                 'status': status,
                                 'status_code': status_code,
                                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                'rating': 0,
+                                'rating': None,  # Start with None instead of 0
                                 'remark': 'Saved and ran',
                                 'edited': False
                             }])
@@ -428,13 +448,15 @@ def render_individual_testing(
                             value=0,
                             key=f"rating_suggested_{i}"
                         )
-                        if rating_val != 0:
+                        if rating_val != 0 or (rating_val == 0 and st.button("Set rating to 0", key=f"set_zero_{i}")):
                             st.session_state.response_ratings[saved_unique_id] = rating_val
                             # Update the new row, but since it's appended, we need to find its index
                             new_index = st.session_state.test_results.index[-1]
                             st.session_state.test_results.at[new_index, 'rating'] = rating_val
+                            st.session_state.test_results.at[new_index, 'edited'] = True
                             export_mask = st.session_state.export_data['unique_id'] == saved_unique_id
                             st.session_state.export_data.loc[export_mask, 'rating'] = rating_val
+                            st.session_state.export_data.loc[export_mask, 'edited'] = True
                             st.rerun()
 
                         # clear suggestion state
@@ -443,11 +465,17 @@ def render_individual_testing(
                         st.rerun()
 
             # details footer
+            display_rating = st.session_state.response_ratings.get(unique_id, result.get('rating'))
+            if pd.isna(display_rating) or display_rating is None:
+                rating_text = "Not rated"
+            else:
+                rating_text = f"{display_rating}/10"
+            
             st.write("**Details:**")
             st.write(
                 f"Status Code: {result.get('status_code', 'N/A')} | "
                 f"Time: {result.get('timestamp', 'N/A')} | "
-                f"Rating: {st.session_state.response_ratings.get(unique_id, result.get('rating', 0))}/10"
+                f"Rating: {rating_text}"
             )
 
     # Note: export preview table is managed by app.export.render_export_section()

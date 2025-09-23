@@ -15,23 +15,23 @@ from app.export import save_export_entry
 load_dotenv()
 gemini_api_key = os.getenv('GEMINI_API_KEY')
 
-def render_prompt_chaining(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func):
+def render_prompt_chaining(api_url, query_text, body_template, headers, response_path, call_api_func, suggest_func, user_name="Unknown"):
     st.header("🔗 Prompt Chaining Testing")
 
     # Initialize export_data if missing
     if 'export_data' not in st.session_state or not isinstance(st.session_state.export_data, pd.DataFrame):
         st.session_state.export_data = pd.DataFrame(columns=[
-            'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
-            'status', 'status_code', 'timestamp', 'edited', 'step', 'input_query',
+            'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response',
+            'status', 'status_code', 'timestamp', 'edited', 'step',
             'combination_strategy', 'combination_temperature', 'slider_weights',
             'rating', 'remark'
         ])
 
     # Session state cleanup
-    if 'response_ratings' not in st.session_state:
+    if 'response_ratings' not in st.session_state or not isinstance(st.session_state.response_ratings, dict):
         st.session_state.response_ratings = {}
     if 'test_results' in st.session_state and isinstance(st.session_state.test_results, pd.DataFrame):
-        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].fillna(0).astype(int)
+        st.session_state.test_results['rating'] = st.session_state.test_results['rating'].astype('Int64')
         st.session_state.test_results = st.session_state.test_results[
             st.session_state.test_results['response'].notnull() & st.session_state.test_results['status'].notnull()
         ].reset_index(drop=True)
@@ -62,9 +62,49 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             if generated_uid and generated_uid in st.session_state.response_ratings:
                 st.session_state.response_ratings[uid] = st.session_state.response_ratings.pop(generated_uid)
             else:
-                st.session_state.response_ratings[uid] = export_row_dict.get('rating', 0) or 0
+                st.session_state.response_ratings[uid] = export_row_dict.get('rating')
 
         return uid
+
+    # 🔀 Reorder prompts (arrow-based UI)
+    if "chain_order" not in st.session_state:
+        st.session_state.chain_order = list(range(len(st.session_state.get("prompts", []))))
+
+    # keep chain_order in sync with prompts length
+    prompts_len = len(st.session_state.get("prompts", []))
+    st.session_state.chain_order = [i for i in st.session_state.chain_order if i < prompts_len]
+    for i in range(prompts_len):
+        if i not in st.session_state.chain_order:
+            st.session_state.chain_order.append(i)
+
+    st.subheader("🔀 Reorder Prompt Chain")
+    if st.session_state.get("prompts"):
+        st.write("Use the arrows to change the execution order of prompts (click Reset Order to restore default).")
+        for pos, idx in enumerate(st.session_state.chain_order):
+            prompt_name = st.session_state.prompt_names[idx] if idx < len(st.session_state.prompt_names) else f"Prompt {idx+1}"
+            cols = st.columns([0.5, 8, 1, 1])
+            cols[0].write(f"{pos+1}.")
+            cols[1].write(prompt_name)
+
+            # Move up
+            if cols[2].button("⬆️", key=f"up_{idx}", disabled=(pos == 0)):
+                st.session_state.chain_order[pos-1], st.session_state.chain_order[pos] = (
+                    st.session_state.chain_order[pos],
+                    st.session_state.chain_order[pos-1]
+                )
+                st.rerun()
+
+            # Move down
+            if cols[3].button("⬇️", key=f"down_{idx}", disabled=(pos == len(st.session_state.chain_order)-1)):
+                st.session_state.chain_order[pos+1], st.session_state.chain_order[pos] = (
+                    st.session_state.chain_order[pos],
+                    st.session_state.chain_order[pos+1]
+                )
+                st.rerun()
+
+        if st.button("Reset Order"):
+            st.session_state.chain_order = list(range(prompts_len))
+            st.rerun()
 
     # Test All Prompts in Chain
     if st.button("🚀 Test Chained Prompts", type="primary", disabled=not (api_url and st.session_state.get('prompts') and query_text)):
@@ -83,13 +123,19 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                 status_text = st.empty()
 
                 current_query = query_text  # Start with initial query
-                for i, (system_prompt, prompt_name) in enumerate(zip(st.session_state.prompts, st.session_state.prompt_names)):
-                    # Name intermediate steps
-                    step_name = f"intermediate_result_after_prompt_{prompt_name if prompt_name else i+1}"
-                    if i == total_prompts - 1:  # Final step
+
+                # 🔀 Run in chosen order
+                for step_num, idx in enumerate(st.session_state.chain_order, start=1):
+                    if idx >= len(st.session_state.prompts):
+                        continue
+                    system_prompt = st.session_state.prompts[idx]
+                    prompt_name = st.session_state.prompt_names[idx] if idx < len(st.session_state.prompt_names) else f"Prompt_{idx}"
+
+                    step_name = f"intermediate_result_after_prompt_{prompt_name if prompt_name else step_num}"
+                    if step_num == total_prompts:  # Final step
                         step_name = "final_step"
                     
-                    status_text.text(f"Testing {step_name} (Step {i+1}/{total_prompts})...")
+                    status_text.text(f"Testing {step_name} (Step {step_num}/{total_prompts})...")
 
                     try:
                         result = call_api_func(
@@ -109,6 +155,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         status_code = 'N/A'
 
                     export_row_dict = {
+                        'user_name': user_name,
                         'test_type': 'Chaining',
                         'prompt_name': step_name,
                         'system_prompt': system_prompt,
@@ -117,11 +164,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         'status': status,
                         'status_code': status_code,
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'rating': 0,
-                        'remark': f'Chained step {i+1}',
+                        'rating': None,
+                        'remark': f'Chained step {step_num}',
                         'edited': False,
-                        'step': i + 1,
-                        'input_query': query_text,
+                        'step': step_num,
                         'combination_strategy': None,
                         'combination_temperature': None,
                         'slider_weights': None
@@ -133,12 +179,12 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         query=current_query,
                         response=response_text,
                         mode="Chaining",
-                        remark=f"Chained step {i+1}",
+                        remark=f"Chained step {step_num}",
                         status=status,
                         status_code=status_code,
-                        rating=0,
-                        step=i + 1,
-                        input_query=query_text
+                        rating=None,
+                        step=step_num,
+                        user_name=user_name
                     )
 
                     generated_uid = f"Chaining_{step_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
@@ -152,22 +198,22 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         response=response_text,
                         status=status,
                         status_code=status_code,
-                        remark=f'Chained step {i+1}',
-                        rating=0,
+                        remark=f'Chained step {step_num}',
+                        rating=None,
                         edited=False,
-                        step=i + 1,
-                        input_query=query_text,
+                        step=step_num,
                         combination_strategy=None,
-                        combination_temperature=None
+                        combination_temperature=None,
+                        user_name=user_name
                     )
 
                     last_index = st.session_state.test_results.index[-1]
                     if st.session_state.test_results.at[last_index, 'unique_id'] != unique_id:
                         st.session_state.test_results.at[last_index, 'unique_id'] = unique_id
 
-                    st.session_state.response_ratings[unique_id] = 0
+                    st.session_state.response_ratings[unique_id] = None
                     current_query = response_text if response_text else current_query  # Use response as next query
-                    progress_bar.progress((i + 1) / total_prompts)
+                    progress_bar.progress((step_num) / total_prompts)
 
                     # Add delay to avoid rate-limiting
                     time.sleep(1)
@@ -192,7 +238,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             success_count = len(display_df[display_df['status'] == 'Success'])
             st.metric("Successful Chained Tests", f"{success_count}/{len(display_df)}")
 
-            for i, result in display_df.sort_values('step').iterrows():
+            sorted_df = display_df.sort_values(by=["timestamp", "step"]).reset_index(drop=True)
+
+            for i, result in sorted_df.iterrows():
                 unique_id = result['unique_id']
                 prompt_name = result['prompt_name']
                 step = result['step']
@@ -211,7 +259,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                     )
 
                     # Rating slider
-                    current_rating = st.session_state.response_ratings.get(unique_id, int(result.get('rating', 0) or 0))
+                    current_rating = st.session_state.response_ratings.get(unique_id)
+                    if pd.isna(current_rating) or current_rating is None:
+                        current_rating = 0
                     new_rating = st.slider(
                         "Rate this response (0-10):",
                         min_value=0,
@@ -238,6 +288,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         with col_save:
                             if st.button(f"💾 Save Edited Response", key=f"save_response_{unique_id}"):
                                 export_row_dict = {
+                                    'user_name': user_name,
                                     'test_type': 'Chaining',
                                     'prompt_name': prompt_name,
                                     'system_prompt': result['system_prompt'],
@@ -250,7 +301,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     'remark': f'Edited chained step {step}',
                                     'edited': True,
                                     'step': step,
-                                    'input_query': result['input_query'],
                                     'combination_strategy': None,
                                     'combination_temperature': None,
                                     'slider_weights': None
@@ -268,7 +318,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     rating=new_rating,
                                     edited=True,
                                     step=step,
-                                    input_query=result['input_query']
+                                    user_name=user_name
                                 )
 
                                 saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=unique_id)
@@ -289,6 +339,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         genai.configure(api_key=gemini_api_key)
                                         suggestion = suggest_func(edited_response, result['query'])
                                         export_row_dict = {
+                                            'user_name': user_name,
                                             'test_type': 'Chaining',
                                             'prompt_name': prompt_name,
                                             'system_prompt': suggestion,
@@ -298,10 +349,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             'status_code': result['status_code'],
                                             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                             'rating': new_rating,
-                                            'remark': f'Reverse prompt for chained step {step}',
+                                            'remark': f'Reverse engineered for step {step}',
                                             'edited': True,
                                             'step': step,
-                                            'input_query': result['input_query'],
                                             'combination_strategy': None,
                                             'combination_temperature': None,
                                             'slider_weights': None
@@ -313,71 +363,75 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             query=result['query'],
                                             response=edited_response,
                                             mode="Chaining",
-                                            remark=f"Reverse prompt for chained step {step}",
+                                            remark=f"Reverse engineered for step {step}",
                                             status=result['status'],
                                             status_code=result['status_code'],
                                             rating=new_rating,
                                             edited=True,
                                             step=step,
-                                            input_query=result['input_query']
+                                            user_name=user_name
                                         )
 
                                         saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=unique_id)
                                         st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'system_prompt'] = suggestion
                                         st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark'] = f'Reverse prompt for chained step {step}'
+                                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark'] = f'Reverse engineered for step {step}'
                                         st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'unique_id'] = saved_unique_id
                                         st.session_state.response_ratings[saved_unique_id] = new_rating
                                         if saved_unique_id != unique_id:
                                             st.session_state.response_ratings.pop(unique_id, None)
-                                        st.success("Prompt updated based on edited response!")
+                                        st.success("Prompt updated via reverse engineering!")
                                         st.rerun()
                                     except Exception as e:
-                                        st.error(f"Error generating reverse prompt: {str(e)}")
+                                        st.error(f"Error generating suggestion: {str(e)}")
 
+                    # Suggest Prompt
                     if st.button(f"🔮 Suggest Prompt for This Response", key=f"suggest_btn_{unique_id}", disabled=not gemini_api_key):
                         with st.spinner("Generating prompt suggestion..."):
                             try:
                                 genai.configure(api_key=gemini_api_key)
-                                suggestion = suggest_func(edited_response if edited_response else (result['response'] or ""), result['query'])
+                                suggestion = suggest_func(edited_response, result['query'])
                                 st.session_state[f"suggested_prompt_{unique_id}"] = suggestion
-                                st.session_state[f"suggested_prompt_name_{unique_id}"] = f"Suggested Prompt Step {step}"
-                                st.write("**Suggested System Prompt:**")
-                                st.text_area("Suggested Prompt:", value=suggestion, height=100, key=f"suggested_{unique_id}", disabled=True)
+                                st.session_state[f"suggested_prompt_name_{unique_id}"] = f"Suggested Prompt for Step {step}"
                             except Exception as e:
                                 st.error(f"Error generating suggestion: {str(e)}")
 
-                    if st.session_state.get(f"suggested_prompt_{unique_id}"):
+                    # If suggestion exists, show save / save & run UI
+                    if f"suggested_prompt_{unique_id}" in st.session_state:
+                        st.write("**Suggested System Prompt:**")
+                        st.text_area("Suggested Prompt:", value=st.session_state[f"suggested_prompt_{unique_id}"], height=120, key=f"suggested_display_{unique_id}", disabled=True)
+
                         col_save, col_save_run, col_edit = st.columns(3)
+
                         with col_save:
-                            prompt_name = st.text_input(
+                            save_prompt_name = st.text_input(
                                 "Prompt Name:",
                                 value=st.session_state[f"suggested_prompt_name_{unique_id}"],
-                                key=f"suggest_name_{unique_id}"
+                                key=f"suggest_save_name_{unique_id}"
                             )
                             if st.button("💾 Save as Prompt", key=f"save_suggest_{unique_id}"):
-                                if prompt_name.strip():
+                                if save_prompt_name.strip():
                                     export_row_dict = {
+                                        'user_name': user_name,
                                         'test_type': 'Chaining',
-                                        'prompt_name': prompt_name.strip(),
+                                        'prompt_name': save_prompt_name.strip(),
                                         'system_prompt': st.session_state[f"suggested_prompt_{unique_id}"],
                                         'query': result['query'],
                                         'response': 'Prompt saved but not executed',
                                         'status': 'Not Executed',
                                         'status_code': 'N/A',
                                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                        'rating': 0,
+                                        'rating': None,
                                         'remark': f'Save only for step {step}',
                                         'edited': False,
                                         'step': step,
-                                        'input_query': result['input_query'],
                                         'combination_strategy': None,
                                         'combination_temperature': None,
                                         'slider_weights': None
                                     }
 
                                     maybe_uid = save_export_entry(
-                                        prompt_name=prompt_name.strip(),
+                                        prompt_name=save_prompt_name.strip(),
                                         system_prompt=st.session_state[f"suggested_prompt_{unique_id}"],
                                         query=result['query'],
                                         response='Prompt saved but not executed',
@@ -385,41 +439,41 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         remark=f"Save only for step {step}",
                                         status='Not Executed',
                                         status_code='N/A',
-                                        rating=0,
+                                        rating=None,
                                         step=step,
-                                        input_query=result['input_query']
+                                        user_name=user_name
                                     )
 
-                                    generated_uid = f"Chaining_{prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                                    generated_uid = f"Chaining_{save_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
                                     saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
 
                                     add_result_row(
                                         test_type='Chaining',
-                                        prompt_name=prompt_name.strip(),
+                                        prompt_name=save_prompt_name.strip(),
                                         system_prompt=st.session_state[f"suggested_prompt_{unique_id}"],
                                         query=result['query'],
                                         response='Prompt saved but not executed',
                                         status='Not Executed',
                                         status_code='N/A',
                                         remark=f'Save only for step {step}',
-                                        rating=0,
+                                        rating=None,
                                         edited=False,
                                         step=step,
-                                        input_query=result['input_query'],
                                         combination_strategy=None,
-                                        combination_temperature=None
+                                        combination_temperature=None,
+                                        user_name=user_name
                                     )
 
                                     last_index = st.session_state.test_results.index[-1]
                                     if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
                                         st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
 
-                                    st.session_state.response_ratings[saved_unique_id] = 0
+                                    st.session_state.response_ratings[saved_unique_id] = None
                                     st.session_state.prompts.append(st.session_state[f"suggested_prompt_{unique_id}"])
-                                    st.session_state.prompt_names.append(prompt_name.strip())
+                                    st.session_state.prompt_names.append(save_prompt_name.strip())
                                     del st.session_state[f"suggested_prompt_{unique_id}"]
                                     del st.session_state[f"suggested_prompt_name_{unique_id}"]
-                                    st.success(f"Saved as new prompt: {prompt_name.strip()}")
+                                    st.success(f"Saved as new prompt: {save_prompt_name.strip()}")
                                     st.rerun()
                                 else:
                                     st.error("Please provide a prompt name")
@@ -454,6 +508,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             status_code = 'N/A'
 
                                         export_row_dict = {
+                                            'user_name': user_name,
                                             'test_type': 'Chaining',
                                             'prompt_name': run_prompt_name.strip(),
                                             'system_prompt': st.session_state[f"suggested_prompt_{unique_id}"],
@@ -466,7 +521,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             'remark': f'Saved and ran for step {step}',
                                             'edited': False,
                                             'step': step,
-                                            'input_query': result['input_query'],
                                             'combination_strategy': None,
                                             'combination_temperature': None,
                                             'slider_weights': None
@@ -481,9 +535,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             remark=f'Saved and ran for step {step}',
                                             status=status,
                                             status_code=status_code,
-                                            rating=0,
+                                            rating=None,
                                             step=step,
-                                            input_query=result['input_query']
+                                            user_name=user_name
                                         )
 
                                         generated_uid = f"Chaining_{run_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
@@ -498,12 +552,12 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             status=status,
                                             status_code=status_code,
                                             remark=f'Saved and ran for step {step}',
-                                            rating=0,
+                                            rating=None,
                                             edited=False,
                                             step=step,
-                                            input_query=result['input_query'],
                                             combination_strategy=None,
-                                            combination_temperature=None
+                                            combination_temperature=None,
+                                            user_name=user_name
                                         )
 
                                         last_index = st.session_state.test_results.index[-1]
@@ -537,6 +591,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                 if st.button("💾 Save Edited Prompt", key=f"save_edited_suggest_{unique_id}"):
                                     if edit_prompt_name.strip():
                                         export_row_dict = {
+                                            'user_name': user_name,
                                             'test_type': 'Chaining',
                                             'prompt_name': edit_prompt_name.strip(),
                                             'system_prompt': edited_suggestion,
@@ -549,7 +604,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             'remark': f'Save only for step {step}',
                                             'edited': False,
                                             'step': step,
-                                            'input_query': result['input_query'],
                                             'combination_strategy': None,
                                             'combination_temperature': None,
                                             'slider_weights': None
@@ -564,9 +618,9 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             remark=f"Save only for step {step}",
                                             status='Not Executed',
                                             status_code='N/A',
-                                            rating=0,
+                                            rating=None,
                                             step=step,
-                                            input_query=result['input_query']
+                                            user_name=user_name
                                         )
 
                                         generated_uid = f"Chaining_{edit_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
@@ -581,12 +635,12 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             status='Not Executed',
                                             status_code='N/A',
                                             remark=f'Save only for step {step}',
-                                            rating=0,
+                                            rating=None,
                                             edited=False,
                                             step=step,
-                                            input_query=result['input_query'],
                                             combination_strategy=None,
-                                            combination_temperature=None
+                                            combination_temperature=None,
+                                            user_name=user_name
                                         )
 
                                         last_index = st.session_state.test_results.index[-1]
@@ -605,10 +659,11 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         st.error("Please provide a prompt name")
 
                     st.write("**Details:**")
+                    rating = st.session_state.response_ratings.get(unique_id, result.get('rating'))
+                    rating_display = f"{rating}/10 ({rating*10}%)" if rating is not None else "Not rated yet"
                     st.write(
                         f"Status Code: {result['status_code']} | "
                         f"Time: {result['timestamp']} | "
                         f"Step: {step} | "
-                        f"Rating: {st.session_state.response_ratings.get(unique_id, result.get('rating', 0))}/10 "
-                        f"({st.session_state.response_ratings.get(unique_id, result.get('rating', 0))*10}%)"
+                        f"Rating: {rating_display}"
                     )
