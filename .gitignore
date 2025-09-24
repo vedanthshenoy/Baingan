@@ -3,3 +3,4 @@
 .env
 __pycache__/
 chroma_db
+storage
