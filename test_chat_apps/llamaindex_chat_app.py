@@ -120,11 +120,22 @@ class RagChat(Resource):
 
         # Handle request
         data = request.get_json()
-        system_prompt = data.get("system_prompt", "You are a helpful assistant.")
+        system_prompt = data.get("system_prompt", "")
         user_prompt = data.get("user_prompt")
+        
+        # Check if user_prompt is present and not empty
+        if not user_prompt:
+            return {"error": "User prompt is required."}, 400
 
         try:
-            full_prompt = f"System: {system_prompt}\nUser: {user_prompt}"
+            # The query engine should handle the system prompt internally, but we'll include it in the query for clarity.
+            # LlamaIndex query engines are often more effective with a concise user prompt.
+            # Let's use the provided system prompt as part of the query text itself, if it exists.
+            if system_prompt:
+                full_prompt = f"System: {system_prompt}\nUser: {user_prompt}"
+            else:
+                full_prompt = user_prompt
+                
             response = query_engine.query(full_prompt)
             return {"response": str(response)}, 200
         except Exception as e:
