@@ -9,7 +9,7 @@ import pandas as pd
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.prompt_management import add_prompt_section, ensure_prompt_names
-from app.api_utils import call_api, suggest_prompt_from_response
+from app.api_utils import call_api, suggest_prompt_from_response, format_request_template
 from app.modes.individual import render_individual_testing
 from app.modes.chaining import render_prompt_chaining
 from app.modes.combination import render_prompt_combination
@@ -45,7 +45,12 @@ defaults = {
         'status', 'status_code', 'timestamp', 'edited', 'step',
         'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
     ]),
-    "prompt_input_key_suffix": str(uuid.uuid4())  # Unique key for prompt input widgets
+    "prompt_input_key_suffix": str(uuid.uuid4()),  # Unique key for prompt input widgets
+    "body_template": """{
+"query": "{system_prompt}\\n\\n{query}",
+"top_k": 5
+}""",  # Default template in session state
+    "body_template_key": str(uuid.uuid4())  # Unique key for body template widget
 }
 for key, val in defaults.items():
     if key not in st.session_state:
@@ -62,6 +67,7 @@ st.markdown("Test **system prompts**, create **prompt chains**, and **combine pr
 # Sidebar: API configuration
 st.sidebar.header("🔧 API Configuration")
 
+# 1st: API Endpoint URL
 st.sidebar.text_input(
     "API Endpoint URL",
     key="api_url",
@@ -69,28 +75,47 @@ st.sidebar.text_input(
     help="Enter the full URL of your chat API endpoint"
 )
 
-# Sidebar: Gemini API configuration
-st.sidebar.subheader("🤖 Gemini API (for prompt combination)")
-env_gemini_key = os.getenv('GEMINI_API_KEY')
-if env_gemini_key:
-    st.sidebar.success("✅ Gemini API key loaded from environment")
-    st.session_state.gemini_api_key = env_gemini_key
-else:
-    gemini_api_key = st.sidebar.text_input(
-        "Gemini API Key",
-        type="password",
-        help="Optional: Enter manually if not in environment",
-        key="gemini_api_key"
+# 2nd: Request Body Template (collapsible)
+st.sidebar.subheader("📋 Request Body Template")
+with st.sidebar.expander("Request Body Template", expanded=True):
+    st.markdown("Paste your API request body from Swagger/Postman and click Submit to auto-format it.")
+    body_template = st.text_area(
+        "JSON Template",
+        value=st.session_state.get('body_template', defaults['body_template']),
+        height=150,
+        help="Paste your API request body template here",
+        key=f"body_template_{st.session_state.body_template_key}"
     )
-    if gemini_api_key:
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=gemini_api_key)
-            st.sidebar.success("✅ Gemini API configured")
-        except Exception as e:
-            st.sidebar.error(f"❌ Gemini API error: {str(e)}")
 
-# Sidebar: Headers
+    # Submit button for template formatting
+    if st.button("Submit", key="submit_template"):
+        if body_template.strip():
+            with st.spinner("Formatting template with AI..."):
+                formatted_template, changes_made = format_request_template(body_template)
+                if formatted_template != body_template:
+                    st.session_state.body_template = formatted_template
+                    st.session_state.body_template_key = str(uuid.uuid4())  # Update key to refresh widget
+                    st.success(f"✅ Template auto-formatted successfully! **Changes made:** {changes_made}")
+                else:
+                    st.info("✅ Template is already in the correct format!")
+        else:
+            st.error("Please enter a request body template first.")
+
+# 3rd: Query input
+query_text = st.sidebar.text_area(
+    "Query (the actual user question)",
+    placeholder="e.g. What is RAG?",
+    height=100
+)
+
+# 4th: Test mode selection
+test_mode = st.sidebar.selectbox(
+    "🎯 Test Mode",
+    ["Individual Testing", "Prompt Chaining", "Prompt Combination"],
+    help="Choose how to test your prompts"
+)
+
+# 5th: Headers (Authentication Type)
 st.sidebar.subheader("Headers")
 auth_type = st.sidebar.selectbox("Authentication Type", ["None", "Bearer Token", "API Key", "Custom"])
 
@@ -117,39 +142,33 @@ elif auth_type == "Custom":
 
 headers["Content-Type"] = "application/json"
 
-# Sidebar: Query input
-query_text = st.sidebar.text_area(
-    "Query (the actual user question)",
-    placeholder="e.g. What is RAG?",
-    height=100
-)
-
-# Sidebar: Test mode selection
-test_mode = st.sidebar.selectbox(
-    "🎯 Test Mode",
-    ["Individual Testing", "Prompt Chaining", "Prompt Combination"],
-    help="Choose how to test your prompts"
-)
-
-# Sidebar: Request body template section
-with st.sidebar.expander("Request Body Template", expanded=False):
-    st.markdown("Enable this section to customize the JSON template for your API requests.")
-    body_template = st.text_area(
-        "JSON Template (use {system_prompt} and {query} as placeholders)",
-        value="""{
-"query": "{system_prompt}\\n\\nQuestion: {query}\\nAnswer:",
-"top_k": 5
-}""",
-        height=150,
-        help="Use {system_prompt} for the system instructions and {query} for the user query"
-    )
-
-# Sidebar: Response path
+# 6th: Response path
 response_path = st.sidebar.text_input(
     "Response Text Path",
     value="response",
     help="JSON path to extract response text (e.g., 'response' or 'data.message')"
 )
+
+# 7th: Gemini API configuration
+st.sidebar.subheader("🤖 Gemini API (for prompt combination)")
+env_gemini_key = os.getenv('GEMINI_API_KEY')
+if env_gemini_key:
+    st.sidebar.success("✅ Gemini API key loaded from environment")
+    st.session_state.gemini_api_key = env_gemini_key
+else:
+    gemini_api_key = st.sidebar.text_input(
+        "Gemini API Key",
+        type="password",
+        help="Optional: Enter manually if not in environment",
+        key="gemini_api_key"
+    )
+    if gemini_api_key:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=gemini_api_key)
+            st.sidebar.success("✅ Gemini API configured")
+        except Exception as e:
+            st.sidebar.error(f"❌ Gemini API error: {str(e)}")
 
 st.markdown("---")
 
@@ -163,11 +182,11 @@ with col2:
     api_url = st.session_state.api_url
     user_name = st.session_state.get("user_name", "Unknown")  # Get user_name from session state
     if test_mode == "Individual Testing":
-        render_individual_testing(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, user_name=user_name)
+        render_individual_testing(api_url, query_text, st.session_state.body_template, headers, response_path, call_api, suggest_prompt_from_response, user_name=user_name)
     elif test_mode == "Prompt Chaining":
-        render_prompt_chaining(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, user_name=user_name)
+        render_prompt_chaining(api_url, query_text, st.session_state.body_template, headers, response_path, call_api, suggest_prompt_from_response, user_name=user_name)
     elif test_mode == "Prompt Combination":
-        render_prompt_combination(api_url, query_text, body_template, headers, response_path, call_api, suggest_prompt_from_response, st.session_state.get("gemini_api_key", ""), user_name=user_name)
+        render_prompt_combination(api_url, query_text, st.session_state.body_template, headers, response_path, call_api, suggest_prompt_from_response, st.session_state.get("gemini_api_key", ""), user_name=user_name)
 
 render_export_section(query_text)
 
@@ -185,4 +204,5 @@ st.markdown("""
 - **⭐ Response Rating:** Rate all responses (0-10, stored as percentage in export)  
 - **📊 Comprehensive Export:** All results including individual, chain, and combination data with ratings and remarks  
 - **💾 Response Editing:** Edit and save responses, with reverse prompt engineering  
+- **🔄 Auto-Format Templates:** Paste API templates from Swagger/Postman and auto-format with AI
 """)
