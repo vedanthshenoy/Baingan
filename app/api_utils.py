@@ -201,14 +201,14 @@ Rules for conversion:
    - For user/query fields: use "{{query}}"
    
 2. Common field mappings:
-   - "system_prompt": "string" → "system_prompt": "{{system_prompt}}"
-   - "user_prompt": "string" → "user_prompt": "{{query}}"
-   - "query": "string" → "query": "{{query}}"
-   - "prompt": "string" → "prompt": "{{query}}"
-   - "message": "string" → "message": "{{query}}"
-   - "text": "string" → "text": "{{query}}"
-   - "input": "string" → "input": "{{query}}"
-   - "content": "string" → "content": "{{query}}"
+   - "system_prompt": "string" â†' "system_prompt": "{{system_prompt}}"
+   - "user_prompt": "string" â†' "user_prompt": "{{query}}"
+   - "query": "string" â†' "query": "{{query}}"
+   - "prompt": "string" â†' "prompt": "{{query}}"
+   - "message": "string" â†' "message": "{{query}}"
+   - "text": "string" â†' "text": "{{query}}"
+   - "input": "string" â†' "input": "{{query}}"
+   - "content": "string" â†' "content": "{{query}}"
 
 3. If only one prompt field exists:
    - If it's a user/query field (e.g., "user_prompt", "query", "prompt"), keep as "{{query}}"
@@ -232,16 +232,16 @@ Return ONLY the formatted JSON template, nothing else.
 
 Example transformations:
 {{"system_prompt": "string", "user_prompt": "string"}} 
-→ {{"system_prompt": "{{system_prompt}}", "user_prompt": "{{query}}"}}
+â†' {{"system_prompt": "{{system_prompt}}", "user_prompt": "{{query}}"}}
 
 {{"query": "string", "max_tokens": "int"}}
-→ {{"query": "{{query}}", "max_tokens": 5000}}
+â†' {{"query": "{{query}}", "max_tokens": 5000}}
 
 {{"prompt": "string"}}
-→ {{"prompt": "{{query}}"}}
+â†' {{"prompt": "{{query}}"}}
 
 {{"messages": [{{"role": "user", "content": "string"}}]}}
-→ {{"messages": [{{"role": "system", "content": "{{system_prompt}}"}}, {{"role": "user", "content": "{{query}}"}}]}}
+â†' {{"messages": [{{"role": "system", "content": "{{system_prompt}}"}}, {{"role": "user", "content": "{{query}}"}}]}}
 """
         
         generation_config = genai.types.GenerationConfig(
@@ -418,8 +418,8 @@ def _describe_template_changes(original: str, formatted: str) -> str:
     except Exception:
         return "Template converted to LLM-compatible format"
 
-def suggest_prompt_from_response(target_response, query, temperature=50):
-    """Generate system prompt suggestions based on target response using Gemini."""
+def suggest_prompt_from_response(existing_prompt, target_response, query, rating=None, enhancement_request=None, temperature=50):
+    """Generate system prompt suggestions based on existing prompt, target response, rating, and enhancement request using Gemini."""
     if not st.session_state.get('gemini_api_key'):
         return "Gemini API key required for prompt suggestion"
     
@@ -428,21 +428,56 @@ def suggest_prompt_from_response(target_response, query, temperature=50):
         
         model = genai.GenerativeModel('gemini-2.5-flash')
         
+        # Build context based on available information
+        context_parts = []
+        
+        # Always include existing prompt and response
+        context_parts.append(f"**Existing System Prompt:**\n{existing_prompt}")
+        context_parts.append(f"**Generated Response:**\n{target_response}")
+        context_parts.append(f"**Original Query Context:** {query}")
+        
+        # Add rating context if provided
+        if rating is not None:
+            rating_percentage = rating * 10  # Convert 0-10 scale to percentage
+            if rating_percentage >= 80:
+                context_parts.append(f"**User Rating:** {rating}/10 ({rating_percentage}%) - High satisfaction, minor refinements needed")
+            elif rating_percentage >= 60:
+                context_parts.append(f"**User Rating:** {rating}/10 ({rating_percentage}%) - Moderate satisfaction, improvements needed")
+            elif rating_percentage >= 40:
+                context_parts.append(f"**User Rating:** {rating}/10 ({rating_percentage}%) - Low satisfaction, significant improvements needed")
+            else:
+                context_parts.append(f"**User Rating:** {rating}/10 ({rating_percentage}%) - Very low satisfaction, major changes required")
+        
+        # Add enhancement request if provided
+        if enhancement_request and enhancement_request.strip():
+            context_parts.append(f"**Requested Enhancements:**\n{enhancement_request}")
+        
+        context = "\n\n".join(context_parts)
+        
         suggestion_prompt = f"""
-Based on the following desired response/output, suggest a system prompt that could generate this type of response when given appropriate queries.
+You are an expert prompt engineer. Based on the provided context, suggest an improved system prompt that addresses the identified issues and enhancement requests.
 
-Target Response:
-{target_response}
+{context}
 
-Original Query Context: {query}
+**Instructions:**
+1. Analyze the existing system prompt and identify areas for improvement
+2. Consider the generated response quality and how it aligns with expectations
+3. If a rating is provided, factor in the satisfaction level:
+   - High ratings (8-10): Make minor refinements and optimizations
+   - Medium ratings (6-7): Make moderate improvements to address gaps
+   - Low ratings (0-5): Make significant changes to fix major issues
+4. If enhancement requests are provided, specifically address those requirements
+5. Maintain the core intent and structure while improving clarity, specificity, and effectiveness
 
-Please analyze the response style, tone, structure, and content approach, then suggest a comprehensive system prompt that would guide an AI to produce similar responses. Focus on:
-1. Response format and structure
-2. Tone and style guidelines
-3. Content depth and approach
-4. Any specific instructions that seem evident from the output
+**Focus Areas for Improvement:**
+- Clarity and specificity of instructions
+- Response format and structure guidance  
+- Tone and style specifications
+- Content depth and coverage requirements
+- Any specific behavioral guidelines
+- Address the enhancement requests if provided
 
-Return only the suggested system prompt without additional explanation.
+Return only the improved system prompt without additional explanation or commentary.
 """
         
         generation_config = genai.types.GenerationConfig(
