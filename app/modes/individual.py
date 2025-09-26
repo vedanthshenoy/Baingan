@@ -16,7 +16,7 @@ except Exception:
     genai = None
 
 from app.prompt_management import ensure_prompt_names
-from app.api_utils import call_api
+from app.api_utils import call_api, suggest_prompt_from_response
 from app.utils import add_result_row
 from app.export import save_export_entry
 
@@ -45,24 +45,18 @@ def _default_call_api_func(system_prompt, query, body_template, headers, respons
     }
 
 
-# Default suggest function using Gemini (if available)
-def _gemini_suggest_func(response_text, original_query):
-    if not gemini_available or not gemini_model:
+# Default suggest function using updated suggest_prompt_from_response
+def _gemini_suggest_func(existing_prompt, response_text, original_query, rating=None, enhancement_request=None):
+    if not gemini_available or not st.session_state.get('gemini_api_key'):
         return "Gemini is not available. Cannot suggest prompt."
-
-    prompt = f"""
-You are given a user query and a response produced by a model.
-Query: {original_query}
-Response: {response_text}
-
-Your task: Suggest an improved system prompt that would likely produce that kind of response.
-Output only the improved system prompt (no extra commentary).
-"""
-    try:
-        result = gemini_model.generate_content(prompt)
-        return result.text.strip() if hasattr(result, "text") else str(result)
-    except Exception as e:
-        return f"Error generating suggestion: {str(e)}"
+    
+    return suggest_prompt_from_response(
+        existing_prompt=existing_prompt,
+        target_response=response_text,
+        query=original_query,
+        rating=rating,
+        enhancement_request=enhancement_request
+    )
 
 
 def render_individual_testing(
@@ -78,7 +72,7 @@ def render_individual_testing(
     """
     Individual testing UI.
     call_api_func: function(system_prompt, query, body_template, headers, response_path) -> dict
-    suggest_func: function(response_text, original_query) -> str
+    suggest_func: function(existing_prompt, response_text, original_query, rating, enhancement_request) -> str
     user_name: str, name of the logged-in user
     """
 
@@ -122,6 +116,10 @@ def render_individual_testing(
 
     if 'prompt_names' not in st.session_state or not isinstance(st.session_state.prompt_names, list):
         st.session_state.prompt_names = []
+
+    # Initialize enhancement requests storage
+    if 'enhancement_requests' not in st.session_state:
+        st.session_state.enhancement_requests = {}
 
     # ---- Run all prompts button ----
     can_run_all = bool(api_url) and bool(st.session_state.get('prompts')) and bool(query_text)
@@ -302,13 +300,40 @@ def render_individual_testing(
                     st.success("Edited response saved.")
                     st.rerun()
 
-            # Suggest Prompt (Gemini-assisted)
+            # Suggest Prompt (Gemini-assisted) with enhancement request
             suggest_disabled = not gemini_available
-            if st.button("🔮 Suggest Prompt for This Response", key=f"suggest_btn_{i}", disabled=suggest_disabled):
-                with st.spinner("Generating prompt suggestion..."):
-                    suggestion = suggest_func(edited_response if edited_response else (result['response'] or ""), result['query'])
-                    st.session_state[f"suggested_prompt_{i}"] = suggestion
-                    st.session_state[f"suggested_prompt_name_{i}"] = f"Suggested Prompt {len(st.session_state.get('prompts', [])) + 1}"
+            if st.button("🔮 Suggest Prompt Based on Response", key=f"suggest_btn_{i}", disabled=suggest_disabled):
+                # Show enhancement request input
+                st.session_state[f"show_enhancement_input_{i}"] = True
+
+            # Show enhancement input if button was clicked
+            if st.session_state.get(f"show_enhancement_input_{i}"):
+                enhancement_request = st.text_area(
+                    "What improvements or enhancements do you expect? (Optional)",
+                    placeholder="e.g., Make the response more detailed, add examples, change tone to be more professional...",
+                    height=100,
+                    key=f"enhancement_input_{i}"
+                )
+                
+                if st.button("Submit", key=f"submit_enhancement_{i}"):
+                    with st.spinner("Generating prompt suggestion..."):
+                        # Get the current rating for this response
+                        current_rating = st.session_state.response_ratings.get(unique_id)
+                        if pd.isna(current_rating) or current_rating is None:
+                            current_rating = None
+                        
+                        suggestion = suggest_func(
+                            existing_prompt=result.get('system_prompt', ''),
+                            target_response=edited_response if edited_response else (result['response'] or ""),
+                            query=result['query'],
+                            rating=current_rating,
+                            enhancement_request=enhancement_request if enhancement_request.strip() else None
+                        )
+                        st.session_state[f"suggested_prompt_{i}"] = suggestion
+                        st.session_state[f"suggested_prompt_name_{i}"] = f"Suggested Prompt {len(st.session_state.get('prompts', [])) + 1}"
+                        # Clear the enhancement input display
+                        st.session_state[f"show_enhancement_input_{i}"] = False
+                        st.rerun()
 
             # If suggestion exists, show save / save & run UI
             if st.session_state.get(f"suggested_prompt_{i}"):
