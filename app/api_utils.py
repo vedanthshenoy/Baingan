@@ -201,14 +201,14 @@ Rules for conversion:
    - For user/query fields: use "{{query}}"
    
 2. Common field mappings:
-   - "system_prompt": "string" â†' "system_prompt": "{{system_prompt}}"
-   - "user_prompt": "string" â†' "user_prompt": "{{query}}"
-   - "query": "string" â†' "query": "{{query}}"
-   - "prompt": "string" â†' "prompt": "{{query}}"
-   - "message": "string" â†' "message": "{{query}}"
-   - "text": "string" â†' "text": "{{query}}"
-   - "input": "string" â†' "input": "{{query}}"
-   - "content": "string" â†' "content": "{{query}}"
+   - "system_prompt": "string" → "system_prompt": "{{system_prompt}}"
+   - "user_prompt": "string" → "user_prompt": "{{query}}"
+   - "query": "string" → "query": "{{query}}"
+   - "prompt": "string" → "prompt": "{{query}}"
+   - "message": "string" → "message": "{{query}}"
+   - "text": "string" → "text": "{{query}}"
+   - "input": "string" → "input": "{{query}}"
+   - "content": "string" → "content": "{{query}}"
 
 3. If only one prompt field exists:
    - If it's a user/query field (e.g., "user_prompt", "query", "prompt"), keep as "{{query}}"
@@ -232,16 +232,16 @@ Return ONLY the formatted JSON template, nothing else.
 
 Example transformations:
 {{"system_prompt": "string", "user_prompt": "string"}} 
-â†' {{"system_prompt": "{{system_prompt}}", "user_prompt": "{{query}}"}}
+→ {{"system_prompt": "{{system_prompt}}", "user_prompt": "{{query}}"}}
 
 {{"query": "string", "max_tokens": "int"}}
-â†' {{"query": "{{query}}", "max_tokens": 5000}}
+→ {{"query": "{{query}}", "max_tokens": 5000}}
 
 {{"prompt": "string"}}
-â†' {{"prompt": "{{query}}"}}
+→ {{"prompt": "{{query}}"}}
 
 {{"messages": [{{"role": "user", "content": "string"}}]}}
-â†' {{"messages": [{{"role": "system", "content": "{{system_prompt}}"}}, {{"role": "user", "content": "{{query}}"}}]}}
+→ {{"messages": [{{"role": "system", "content": "{{system_prompt}}"}}, {{"role": "user", "content": "{{query}}"}}]}}
 """
         
         generation_config = genai.types.GenerationConfig(
