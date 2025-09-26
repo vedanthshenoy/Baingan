@@ -335,7 +335,7 @@ def render_individual_testing(
                         st.session_state[f"show_enhancement_input_{i}"] = False
                         st.rerun()
 
-            # If suggestion exists, show save / save & run UI
+            # If suggestion exists, show save / save & run / edit UI
             if st.session_state.get(f"suggested_prompt_{i}"):
                 st.write("**Suggested System Prompt:**")
                 st.text_area("Suggested Prompt:", value=st.session_state[f"suggested_prompt_{i}"], height=120, key=f"suggested_display_{i}", disabled=True)
@@ -346,7 +346,7 @@ def render_individual_testing(
                     key=f"suggested_name_input_{i}"
                 )
 
-                c1, c2 = st.columns(2)
+                c1, c2, c3 = st.columns(3)
 
                 # Save only
                 with c1:
@@ -488,6 +488,74 @@ def render_individual_testing(
                         del st.session_state[f"suggested_prompt_{i}"]
                         del st.session_state[f"suggested_prompt_name_{i}"]
                         st.rerun()
+
+                # Edit Suggested Prompt
+                with c3:
+                    if st.button("✏️ Edit", key=f"edit_suggest_{i}"):
+                        st.session_state[f"edit_suggest_{i}_active"] = True
+
+                    if st.session_state.get(f"edit_suggest_{i}_active", False):
+                        edited_suggestion = st.text_area(
+                            "Edit Suggested Prompt:",
+                            value=st.session_state[f"suggested_prompt_{i}"],
+                            height=100,
+                            key=f"edit_suggested_{i}"
+                        )
+                        edit_prompt_name = st.text_input(
+                            "Prompt Name for Edited Prompt:",
+                            value=st.session_state[f"suggested_prompt_name_{i}"],
+                            key=f"edit_suggest_name_{i}"
+                        )
+                        if st.button("💾 Save Edited Prompt", key=f"save_edited_suggest_{i}"):
+                            if edit_prompt_name.strip():
+                                # Save to export_data via save_export_entry (Not executed)
+                                saved_unique_id = save_export_entry(
+                                    prompt_name=edit_prompt_name.strip(),
+                                    system_prompt=edited_suggestion,
+                                    query=result.get('query', ''),
+                                    response='Prompt saved but not executed',
+                                    mode='Individual',
+                                    remark='Saved edited prompt',
+                                    status='Not Executed',
+                                    status_code='N/A',
+                                    rating=None,
+                                    edited=False,
+                                    user_name=user_name
+                                )
+
+                                # register rating default for this new row
+                                st.session_state.response_ratings[saved_unique_id] = None
+
+                                # add to prompts list
+                                st.session_state.prompts.append(edited_suggestion)
+                                st.session_state.prompt_names.append(edit_prompt_name.strip())
+
+                                # append to test_results
+                                new_result = pd.DataFrame([{
+                                    'user_name': user_name,
+                                    'unique_id': saved_unique_id,
+                                    'test_type': 'Individual',
+                                    'prompt_name': edit_prompt_name.strip(),
+                                    'system_prompt': edited_suggestion,
+                                    'query': result.get('query', ''),
+                                    'response': 'Prompt saved but not executed',
+                                    'status': 'Not Executed',
+                                    'status_code': 'N/A',
+                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    'rating': None,
+                                    'remark': 'Saved edited prompt',
+                                    'edited': False
+                                }])
+                                st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
+
+                                # clear suggestion and edit state
+                                st.session_state[f"edit_suggest_{i}_active"] = False
+                                del st.session_state[f"suggested_prompt_{i}"]
+                                del st.session_state[f"suggested_prompt_name_{i}"]
+                                st.success(f"Saved edited prompt as: {edit_prompt_name.strip()}")
+                                st.rerun()
+                            else:
+                                st.error("Please provide a prompt name")
 
             # details footer
             display_rating = st.session_state.response_ratings.get(unique_id, result.get('rating'))
