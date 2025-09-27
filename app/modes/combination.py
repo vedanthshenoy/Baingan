@@ -619,7 +619,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         st.write("**Suggest Prompt Improvements**")
                         enhancement_request = st.text_area(
                             "Describe desired improvements for the response (optional):",
-                            value=st.session_state.get(f"enhancement_request_individual_{i}_{unique_id}", ""),
+                            value="",  # Let Streamlit manage the value
                             height=100,
                             key=f"enhancement_request_individual_{i}_{unique_id}",
                             help="e.g., 'Make the response more concise' or 'Include more technical details'"
@@ -637,7 +637,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     )
                                     st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"] = suggestion
                                     st.session_state[f"suggested_prompt_name_individual_{i}_{unique_id}"] = f"Suggested Prompt for {individual_result['prompt_name']}"
-                                    st.session_state[f"enhancement_request_individual_{i}_{unique_id}"] = enhancement_request
                                     st.session_state[f"suggest_individual_active_{i}_{unique_id}"] = False  # Reset to hide input
                                     st.rerun()
                                 except Exception as e:
@@ -1035,7 +1034,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                     st.write("**Suggest Prompt Improvements**")
                     enhancement_request = st.text_area(
                         "Describe desired improvements for the response (optional):",
-                        value=st.session_state.get(f"enhancement_request_combined_{unique_id}", ""),
+                        value="",  # Let Streamlit manage the value
                         height=100,
                         key=f"enhancement_request_combined_{unique_id}",
                         help="e.g., 'Make the response more concise' or 'Include more technical details'"
@@ -1053,7 +1052,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                 )
                                 st.session_state[f"suggested_prompt_combined_{unique_id}"] = suggestion
                                 st.session_state[f"suggested_prompt_name_combined_{unique_id}"] = "Suggested Prompt for Combined Response"
-                                st.session_state[f"enhancement_request_combined_{unique_id}"] = enhancement_request
                                 st.session_state[f"suggest_combined_active_{unique_id}"] = False  # Reset to hide input
                                 st.rerun()
                             except Exception as e:
