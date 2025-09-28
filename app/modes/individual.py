@@ -59,6 +59,161 @@ def _gemini_suggest_func(existing_prompt, response_text, original_query, rating=
     )
 
 
+def initialize_prompt_tracking():
+    """Initialize prompt tracking session state variables"""
+    if 'prompt_status' not in st.session_state:
+        st.session_state.prompt_status = []
+    if 'recently_added_indices' not in st.session_state:
+        st.session_state.recently_added_indices = set()
+    if 'recently_updated_indices' not in st.session_state:
+        st.session_state.recently_updated_indices = set()
+    if 'last_test_run_count' not in st.session_state:
+        st.session_state.last_test_run_count = 0
+
+
+def update_prompt_tracking():
+    """Update prompt tracking based on current prompts"""
+    current_prompt_count = len(st.session_state.get('prompts', []))
+    
+    # Extend prompt_status if new prompts were added
+    while len(st.session_state.prompt_status) < current_prompt_count:
+        st.session_state.prompt_status.append('added')
+        st.session_state.recently_added_indices.add(len(st.session_state.prompt_status) - 1)
+
+
+def mark_prompt_as_updated(index):
+    """Mark a prompt as updated"""
+    if index < len(st.session_state.prompt_status):
+        if st.session_state.prompt_status[index] != 'added':  # Don't change 'added' to 'updated'
+            st.session_state.prompt_status[index] = 'updated'
+            st.session_state.recently_updated_indices.add(index)
+
+
+def get_prompts_to_run(run_type):
+    """Get list of prompt indices to run based on run type"""
+    if not st.session_state.get('prompts'):
+        return []
+    
+    total_prompts = len(st.session_state.prompts)
+    
+    if run_type == "all":
+        return list(range(total_prompts))
+    elif run_type == "recently_added":
+        return list(st.session_state.recently_added_indices)
+    elif run_type == "updated":
+        return list(st.session_state.recently_updated_indices)
+    elif run_type == "updated_and_added":
+        return list(st.session_state.recently_added_indices | st.session_state.recently_updated_indices)
+    else:
+        return []
+
+
+def clear_tracking_after_run(run_type):
+    """Clear tracking sets after successful run"""
+    if run_type == "all":
+        st.session_state.recently_added_indices.clear()
+        st.session_state.recently_updated_indices.clear()
+        st.session_state.prompt_status = ['tested'] * len(st.session_state.get('prompts', []))
+    elif run_type == "recently_added":
+        st.session_state.recently_added_indices.clear()
+        # Update status for recently added prompts
+        for i in range(len(st.session_state.prompt_status)):
+            if st.session_state.prompt_status[i] == 'added':
+                st.session_state.prompt_status[i] = 'tested'
+    elif run_type == "updated":
+        st.session_state.recently_updated_indices.clear()
+        # Update status for updated prompts
+        for i in range(len(st.session_state.prompt_status)):
+            if st.session_state.prompt_status[i] == 'updated':
+                st.session_state.prompt_status[i] = 'tested'
+    elif run_type == "updated_and_added":
+        st.session_state.recently_added_indices.clear()
+        st.session_state.recently_updated_indices.clear()
+        # Update status for both added and updated prompts
+        for i in range(len(st.session_state.prompt_status)):
+            if st.session_state.prompt_status[i] in ['added', 'updated']:
+                st.session_state.prompt_status[i] = 'tested'
+
+
+def run_selected_prompts(prompt_indices, run_type, api_url, query_text, body_template, headers, response_path, call_api_func, user_name):
+    """Run tests for selected prompt indices"""
+    if not prompt_indices:
+        st.warning(f"No prompts to run for '{run_type}' option.")
+        return
+    
+    st.subheader("Results")
+    with st.spinner("Running tests..."):
+        ensure_prompt_names()
+        total_prompts = len(prompt_indices)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        for i, prompt_index in enumerate(prompt_indices):
+            system_prompt = st.session_state.prompts[prompt_index]
+            prompt_name = st.session_state.prompt_names[prompt_index]
+            
+            status_text.text(f"Testing {prompt_name} ({i+1}/{total_prompts})...")
+            try:
+                result = call_api_func(
+                    system_prompt=system_prompt,
+                    query=query_text,
+                    body_template=body_template,
+                    headers=headers,
+                    response_path=response_path
+                ) or {}
+                response_text = result.get('response')
+                status = result.get('status', 'Failed')
+                status_code = str(result.get('status_code', 'N/A'))
+            except Exception as e:
+                response_text = f"Error: {str(e)}"
+                status = 'Failed'
+                status_code = 'N/A'
+
+            # Save via save_export_entry to ensure export_data is canonical
+            unique_id = save_export_entry(
+                prompt_name=prompt_name,
+                system_prompt=system_prompt,
+                query=query_text,
+                response=response_text,
+                mode="Individual",
+                remark="Saved and ran",
+                status=status,
+                status_code=status_code,
+                rating=None,  # Start with None instead of 0
+                edited=False,
+                user_name=user_name
+            )
+
+            # register default rating for this unique_id
+            st.session_state.response_ratings[unique_id] = None
+
+            new_result = pd.DataFrame([{
+                'user_name': user_name,
+                'unique_id': unique_id,
+                'test_type': 'Individual',
+                'prompt_name': prompt_name,
+                'system_prompt': system_prompt,
+                'query': query_text,
+                'response': response_text,
+                'status': status,
+                'status_code': status_code,
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'rating': None,  # Start with None instead of 0
+                'remark': 'Saved and ran',
+                'edited': False
+            }])
+            st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
+
+            progress_bar.progress((i + 1) / max(1, total_prompts))
+            time.sleep(1)
+
+        status_text.text("Tests completed!")
+        st.success(f"Tested {total_prompts} prompts!")
+        
+        # Clear tracking after successful run
+        clear_tracking_after_run(run_type)
+
+
 def render_individual_testing(
     api_url,
     query_text,
@@ -80,6 +235,10 @@ def render_individual_testing(
 
     call_api_func = call_api_func or _default_call_api_func
     suggest_func = suggest_func or _gemini_suggest_func
+
+    # Initialize prompt tracking
+    initialize_prompt_tracking()
+    update_prompt_tracking()
 
     # Expected schema for both test_results and export_data
     expected_columns = [
@@ -121,9 +280,16 @@ def render_individual_testing(
     if 'enhancement_requests' not in st.session_state:
         st.session_state.enhancement_requests = {}
 
-    # ---- Run all prompts button ----
-    can_run_all = bool(api_url) and bool(st.session_state.get('prompts')) and bool(query_text)
-    if st.button("🚀 Test All Prompts", type="primary", disabled=not can_run_all):
+    # ---- Run prompts buttons ----
+    can_run_basic = bool(api_url) and bool(st.session_state.get('prompts')) and bool(query_text)
+    
+    # Determine which buttons should be enabled
+    has_recently_added = bool(st.session_state.recently_added_indices)
+    has_updated = bool(st.session_state.recently_updated_indices)
+    has_recently_added_or_updated = has_recently_added or has_updated
+
+    # Button 1: Test All Prompts
+    if st.button("🚀 Test All Prompts", type="primary", disabled=not can_run_basic):
         if not api_url:
             st.error("Please enter an API endpoint URL")
         elif not st.session_state.get('prompts'):
@@ -131,71 +297,47 @@ def render_individual_testing(
         elif not query_text:
             st.error("Please enter a query")
         else:
-            st.subheader("Results")
-            with st.spinner("Running tests..."):
-                ensure_prompt_names()
-                total_prompts = len(st.session_state.prompts)
-                progress_bar = st.progress(0)
-                status_text = st.empty()
+            prompt_indices = get_prompts_to_run("all")
+            run_selected_prompts(prompt_indices, "all", api_url, query_text, body_template, headers, response_path, call_api_func, user_name)
 
-                for i, (system_prompt, prompt_name) in enumerate(zip(st.session_state.prompts, st.session_state.prompt_names)):
-                    status_text.text(f"Testing {prompt_name} ({i+1}/{total_prompts})...")
-                    try:
-                        result = call_api_func(
-                            system_prompt=system_prompt,
-                            query=query_text,
-                            body_template=body_template,
-                            headers=headers,
-                            response_path=response_path
-                        ) or {}
-                        response_text = result.get('response')
-                        status = result.get('status', 'Failed')
-                        status_code = str(result.get('status_code', 'N/A'))
-                    except Exception as e:
-                        response_text = f"Error: {str(e)}"
-                        status = 'Failed'
-                        status_code = 'N/A'
+    # Button 2: Run Recently Added
+    recently_added_disabled = not can_run_basic or not has_recently_added
+    if st.button("➕ Run Recently Added", disabled=recently_added_disabled):
+        if not api_url:
+            st.error("Please enter an API endpoint URL")
+        elif not st.session_state.get('prompts'):
+            st.error("Please add at least one system prompt")
+        elif not query_text:
+            st.error("Please enter a query")
+        else:
+            prompt_indices = get_prompts_to_run("recently_added")
+            run_selected_prompts(prompt_indices, "recently_added", api_url, query_text, body_template, headers, response_path, call_api_func, user_name)
 
-                    # Save via save_export_entry to ensure export_data is canonical
-                    unique_id = save_export_entry(
-                        prompt_name=prompt_name,
-                        system_prompt=system_prompt,
-                        query=query_text,
-                        response=response_text,
-                        mode="Individual",
-                        remark="Saved and ran",
-                        status=status,
-                        status_code=status_code,
-                        rating=None,  # Start with None instead of 0
-                        edited=False,
-                        user_name=user_name
-                    )
+    # Button 3: Run Updated Only
+    updated_disabled = not can_run_basic or not has_updated
+    if st.button("🔄 Run Updated Only", disabled=updated_disabled):
+        if not api_url:
+            st.error("Please enter an API endpoint URL")
+        elif not st.session_state.get('prompts'):
+            st.error("Please add at least one system prompt")
+        elif not query_text:
+            st.error("Please enter a query")
+        else:
+            prompt_indices = get_prompts_to_run("updated")
+            run_selected_prompts(prompt_indices, "updated", api_url, query_text, body_template, headers, response_path, call_api_func, user_name)
 
-                    # register default rating for this unique_id
-                    st.session_state.response_ratings[unique_id] = None
-
-                    new_result = pd.DataFrame([{
-                        'user_name': user_name,
-                        'unique_id': unique_id,
-                        'test_type': 'Individual',
-                        'prompt_name': prompt_name,
-                        'system_prompt': system_prompt,
-                        'query': query_text,
-                        'response': response_text,
-                        'status': status,
-                        'status_code': status_code,
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'rating': None,  # Start with None instead of 0
-                        'remark': 'Saved and ran',
-                        'edited': False
-                    }])
-                    st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
-
-                    progress_bar.progress((i + 1) / max(1, total_prompts))
-                    time.sleep(1)
-
-                status_text.text("Tests completed!")
-                st.success(f"Tested {total_prompts} prompts!")
+    # Button 4: Run Updated & Added
+    updated_and_added_disabled = not can_run_basic or not has_recently_added_or_updated
+    if st.button("🔄➕ Run Updated & Added", disabled=updated_and_added_disabled):
+        if not api_url:
+            st.error("Please enter an API endpoint URL")
+        elif not st.session_state.get('prompts'):
+            st.error("Please add at least one system prompt")
+        elif not query_text:
+            st.error("Please enter a query")
+        else:
+            prompt_indices = get_prompts_to_run("updated_and_added")
+            run_selected_prompts(prompt_indices, "updated_and_added", api_url, query_text, body_template, headers, response_path, call_api_func, user_name)
 
     # ---- Display Results (expanders) ----
     st.subheader("Saved Results")
@@ -371,9 +513,12 @@ def render_individual_testing(
                         # register rating default for this new row
                         st.session_state.response_ratings[saved_unique_id] = None
 
-                        # add to prompts list
+                        # add to prompts list and mark as recently added
                         st.session_state.prompts.append(suggested_prompt)
                         st.session_state.prompt_names.append(saved_name)
+                        new_index = len(st.session_state.prompts) - 1
+                        st.session_state.prompt_status.append('added')
+                        st.session_state.recently_added_indices.add(new_index)
 
                         # append to test_results
                         new_result = pd.DataFrame([{
@@ -439,9 +584,12 @@ def render_individual_testing(
                             # register rating default for this new row
                             st.session_state.response_ratings[saved_unique_id] = None
 
-                            # add to prompts list
+                            # add to prompts list and mark as recently added
                             st.session_state.prompts.append(suggested_prompt)
                             st.session_state.prompt_names.append(saved_name)
+                            new_index = len(st.session_state.prompts) - 1
+                            st.session_state.prompt_status.append('added')
+                            st.session_state.recently_added_indices.add(new_index)
 
                             # append to test_results
                             new_result = pd.DataFrame([{
@@ -526,9 +674,12 @@ def render_individual_testing(
                                 # register rating default for this new row
                                 st.session_state.response_ratings[saved_unique_id] = None
 
-                                # add to prompts list
+                                # add to prompts list and mark as recently added
                                 st.session_state.prompts.append(edited_suggestion)
                                 st.session_state.prompt_names.append(edit_prompt_name.strip())
+                                new_index = len(st.session_state.prompts) - 1
+                                st.session_state.prompt_status.append('added')
+                                st.session_state.recently_added_indices.add(new_index)
 
                                 # append to test_results
                                 new_result = pd.DataFrame([{
