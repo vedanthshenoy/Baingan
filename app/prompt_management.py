@@ -45,6 +45,17 @@ def add_new_prompt_callback():
             st.session_state.prompt_ids = []
         st.session_state.prompt_ids.append(pid)
 
+        # Initialize tracking for new prompt (used by individual testing)
+        if 'prompt_status' not in st.session_state:
+            st.session_state.prompt_status = []
+        if 'recently_added_indices' not in st.session_state:
+            st.session_state.recently_added_indices = set()
+
+        # Mark new prompt as added
+        new_index = len(st.session_state.prompts) - 1
+        st.session_state.prompt_status.append('added')
+        st.session_state.recently_added_indices.add(new_index)
+
         # Add placeholder row to test_results with the correct prompt name and prompt_id
         # Keep same schema but include 'prompt_id' for precise mapping
         row = {
@@ -101,6 +112,18 @@ def save_prompt_callback(pid: str):
     # Update parallel lists
     st.session_state.prompt_names[idx] = new_name
     st.session_state.prompts[idx] = new_text
+
+    # Mark prompt as updated for tracking (used by individual testing)
+    if 'prompt_status' not in st.session_state:
+        st.session_state.prompt_status = ['tested'] * len(st.session_state.prompts)
+    if 'recently_updated_indices' not in st.session_state:
+        st.session_state.recently_updated_indices = set()
+
+    # Only mark as updated if it's not already marked as 'added'
+    if len(st.session_state.prompt_status) > idx:
+        if st.session_state.prompt_status[idx] != 'added':
+            st.session_state.prompt_status[idx] = 'updated'
+            st.session_state.recently_updated_indices.add(idx)
 
     # Update test_results rows that match this prompt_id if available, else fallback to old_name
     try:
@@ -164,6 +187,16 @@ def remove_prompt_callback(pid: str):
     except Exception:
         pass
 
+    # Update tracking indices after removal (used by individual testing)
+    if 'prompt_status' in st.session_state and 'recently_added_indices' in st.session_state and 'recently_updated_indices' in st.session_state:
+        # Remove the status for this index
+        if idx < len(st.session_state.prompt_status):
+            st.session_state.prompt_status.pop(idx)
+        
+        # Update all tracking indices that are greater than the removed index
+        st.session_state.recently_added_indices = {i-1 if i > idx else i for i in st.session_state.recently_added_indices if i != idx}
+        st.session_state.recently_updated_indices = {i-1 if i > idx else i for i in st.session_state.recently_updated_indices if i != idx}
+
     # Clean up any widget keys that used the pid (to avoid stale values being reused)
     for k in [f"prompt_name_input_{pid}", f"prompt_text_input_{pid}", f"save_btn_{pid}", f"remove_btn_{pid}"]:
         if k in st.session_state:
@@ -180,7 +213,7 @@ def add_prompt_section():
     if 'new_prompt_name_input' not in st.session_state:
         st.session_state.new_prompt_name_input = ""
 
-    st.text_input("📝 New Prompt Name", key="new_prompt_name_input", placeholder="e.g., Marketing Persona Prompt")
+    st.text_input("🏷 New Prompt Name", key="new_prompt_name_input", placeholder="e.g., Marketing Persona Prompt")
     st.text_area("➕ Add New Prompt", key="new_prompt_input")
     # The on_click callback is used to run the add_new_prompt_callback function
     st.button("Add Prompt", key="add_prompt_btn", on_click=add_new_prompt_callback)
