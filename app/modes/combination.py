@@ -1041,7 +1041,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         value="",  # Let Streamlit manage the value
                         height=100,
                         key=f"enhancement_request_combined_{unique_id}",
-                        help="e.g., 'Make the response more concise' or 'Include more technical details'"
+                        placeholder="e.g., Make the response more detailed, add examples, change tone to be more professional..."
                     )
                     if st.button("Submit Suggestion Request", key=f"submit_suggest_combined_{unique_id}"):
                         with st.spinner("Generating prompt suggestion..."):
