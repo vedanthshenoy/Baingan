@@ -36,6 +36,10 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
             st.session_state.test_results['response'].notnull() & st.session_state.test_results['status'].notnull()
         ].reset_index(drop=True)
 
+    # Initialize enhancement requests storage
+    if 'enhancement_requests' not in st.session_state:
+        st.session_state.enhancement_requests = {}
+
     # Helper to normalize uid
     def normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=None):
         if isinstance(maybe_uid, str) and maybe_uid:
@@ -337,7 +341,14 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                 with st.spinner("Generating updated prompt..."):
                                     try:
                                         genai.configure(api_key=gemini_api_key)
-                                        suggestion = suggest_func(edited_response, result['query'])
+                                        # Use the updated suggest_prompt_from_response function
+                                        suggestion = suggest_prompt_from_response(
+                                            existing_prompt=result['system_prompt'],
+                                            target_response=edited_response,
+                                            query=result['query'],
+                                            rating=new_rating if new_rating != 0 else None,
+                                            enhancement_request=None
+                                        )
                                         export_row_dict = {
                                             'user_name': user_name,
                                             'test_type': 'Chaining',
@@ -385,16 +396,43 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     except Exception as e:
                                         st.error(f"Error generating suggestion: {str(e)}")
 
-                    # Suggest Prompt
-                    if st.button(f"🔮 Suggest Prompt for This Response", key=f"suggest_btn_{unique_id}", disabled=not gemini_api_key):
-                        with st.spinner("Generating prompt suggestion..."):
-                            try:
-                                genai.configure(api_key=gemini_api_key)
-                                suggestion = suggest_func(edited_response, result['query'])
-                                st.session_state[f"suggested_prompt_{unique_id}"] = suggestion
-                                st.session_state[f"suggested_prompt_name_{unique_id}"] = f"Suggested Prompt for Step {step}"
-                            except Exception as e:
-                                st.error(f"Error generating suggestion: {str(e)}")
+                    # Suggest Prompt with enhancement request
+                    if st.button(f"🔮 Suggest Prompt Based on Response", key=f"suggest_btn_{unique_id}", disabled=not gemini_api_key):
+                        # Show enhancement request input
+                        st.session_state[f"show_enhancement_input_{unique_id}"] = True
+
+                    # Show enhancement input if button was clicked
+                    if st.session_state.get(f"show_enhancement_input_{unique_id}"):
+                        enhancement_request = st.text_area(
+                            "What improvements or enhancements do you expect? (Optional)",
+                            placeholder="e.g., Make the response more detailed, add examples, change tone to be more professional...",
+                            height=100,
+                            key=f"enhancement_input_{unique_id}"
+                        )
+                        
+                        if st.button("Submit", key=f"submit_enhancement_{unique_id}"):
+                            with st.spinner("Generating prompt suggestion..."):
+                                try:
+                                    genai.configure(api_key=gemini_api_key)
+                                    # Get the current rating for this response
+                                    current_rating = st.session_state.response_ratings.get(unique_id)
+                                    if pd.isna(current_rating) or current_rating is None:
+                                        current_rating = None
+                                    
+                                    suggestion = suggest_prompt_from_response(
+                                        existing_prompt=result['system_prompt'],
+                                        target_response=edited_response if edited_response else (result['response'] or ""),
+                                        query=result['query'],
+                                        rating=current_rating,
+                                        enhancement_request=enhancement_request if enhancement_request.strip() else None
+                                    )
+                                    st.session_state[f"suggested_prompt_{unique_id}"] = suggestion
+                                    st.session_state[f"suggested_prompt_name_{unique_id}"] = f"Suggested Prompt for Step {step}"
+                                    # Clear the enhancement input display
+                                    st.session_state[f"show_enhancement_input_{unique_id}"] = False
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error generating suggestion: {str(e)}")
 
                     # If suggestion exists, show save / save & run UI
                     if f"suggested_prompt_{unique_id}" in st.session_state:
@@ -517,7 +555,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             'status': status,
                                             'status_code': status_code,
                                             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            'rating': 0,
+                                            'rating': None,
                                             'remark': f'Saved and ran for step {step}',
                                             'edited': False,
                                             'step': step,
@@ -564,7 +602,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
                                             st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
 
-                                        st.session_state.response_ratings[saved_unique_id] = 0
+                                        st.session_state.response_ratings[saved_unique_id] = None
                                         del st.session_state[f"suggested_prompt_{unique_id}"]
                                         del st.session_state[f"suggested_prompt_name_{unique_id}"]
                                         st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
@@ -600,7 +638,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                             'status': 'Not Executed',
                                             'status_code': 'N/A',
                                             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            'rating': 0,
+                                            'rating': None,
                                             'remark': f'Save only for step {step}',
                                             'edited': False,
                                             'step': step,
@@ -647,7 +685,7 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
                                             st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
 
-                                        st.session_state.response_ratings[saved_unique_id] = 0
+                                        st.session_state.response_ratings[saved_unique_id] = None
                                         st.session_state.prompts.append(edited_suggestion)
                                         st.session_state.prompt_names.append(edit_prompt_name.strip())
                                         st.session_state[f"edit_suggest_{unique_id}_active"] = False
