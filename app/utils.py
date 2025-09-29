@@ -51,4 +51,13 @@ def add_result_row(
         'combination_temperature': combination_temperature,
     }])
 
-    st.session_state.test_results = pd.concat([df for df in [st.session_state.test_results, new_entry] if not df.empty], ignore_index=True)
+    if st.session_state.test_results.empty:
+        st.session_state.test_results = new_entry
+    else:
+        # Drop all-NA columns from new_entry to avoid concatenation issues
+        new_entry = new_entry.dropna(axis=1, how='all')
+        st.session_state.test_results = pd.concat(
+            [st.session_state.test_results, new_entry],
+            ignore_index=True,
+            join='outer'
+        )
