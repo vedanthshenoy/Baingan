@@ -230,6 +230,18 @@ class DatabaseManager:
         except Error as e:
             print(f"Error fetching user: {e}")
             return None
+        
+    def check_user_type(self, username):
+        """Check the user_type for a given username in the users table."""
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            cursor.execute("SELECT user_type FROM users WHERE username = %s", (username,))
+            result = cursor.fetchone()
+            cursor.close()
+            return result['user_type'] if result else None
+        except Error as e:
+            print(f"Error checking user type: {e}")
+            return None
     
     def delete_guest_users(self, days_old=7):
         """Delete guest users older than specified days."""
@@ -252,7 +264,7 @@ class DatabaseManager:
     def save_export_result(self, user_name, unique_id, test_type, prompt_name, system_prompt, 
                           query, response, status, status_code, timestamp, edited, step,
                           combination_strategy, combination_temperature, slider_weights, 
-                          rating, remark):
+                          rating, remark, created_at=None, updated_at=None):
         """Save export result to database."""
         try:
             cursor = self.connection.cursor()
@@ -309,9 +321,13 @@ class DatabaseManager:
             cursor = self.connection.cursor()
             cursor.execute("""
                 UPDATE export_results
-                SET rating = %s, remark = %s, edited = TRUE
+                SET rating = %s,
+                    remark = %s,
+                    edited = TRUE,
+                    updated_at = %s
                 WHERE unique_id = %s
-            """, (rating, remark, unique_id))
+            """, (rating, remark, datetime.now(), unique_id))
+
             
             self.connection.commit()
             cursor.close()
