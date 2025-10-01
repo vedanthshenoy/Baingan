@@ -9,6 +9,7 @@ from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
 from app.utils import add_result_row
 from app.export import save_export_entry
+from app.export_with_db import save_export_entry #with db
 
 def debug_log(message):
     """Log debug messages to session state instead of displaying on screen."""
