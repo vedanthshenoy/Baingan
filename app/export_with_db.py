@@ -26,6 +26,46 @@ def get_db_connection():
         return db
     return None
 
+def check_if_guest_user(user_name=None):
+    """Check if the current user is a guest."""
+    # First check session state user_type (most reliable)
+    if 'user_type' in st.session_state and st.session_state.user_type == 'guest':
+        return True
+    
+    # Fallback: Check if guest_username exists in session
+    if 'guest_username' in st.session_state:
+        return True
+    
+    # Last resort: Query database with actual username
+    if user_name:
+        db = get_db_connection()
+        if db:
+            # Use guest_username if available, otherwise use user_name
+            username_to_check = st.session_state.get('guest_username', user_name)
+            user_type = db.check_user_type(username_to_check)
+            db.disconnect()
+            return user_type == 'guest'
+    
+    return False
+
+def initialize_guest_session():
+    """Initialize or reset session state for guest users to ensure clean slate."""
+    st.session_state.export_data = pd.DataFrame(columns=[
+        'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt',
+        'query', 'response', 'status', 'status_code', 'timestamp',
+        'edited', 'step', 'combination_strategy', 'combination_temperature',
+        'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
+    ]).astype({'rating': 'Int64'})
+    st.session_state.test_results = pd.DataFrame(columns=[
+        'user_name', 'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 
+        'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
+    ])
+    st.session_state.chain_results = []
+    st.session_state.combination_results = {}
+    st.session_state.response_ratings = {}
+    # Mark that guest session has been initialized
+    st.session_state.guest_session_initialized = True
+
 def save_export_entry(
     prompt_name,
     system_prompt,
@@ -49,12 +89,14 @@ def save_export_entry(
         st.session_state.export_data = pd.DataFrame(columns=[
             'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
             'status', 'status_code', 'timestamp', 'edited', 'step',
-            'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
+            'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark',
+            'created_at', 'updated_at'
         ]).astype({'rating': 'Int64'})
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     unique_id = f"{mode}_{prompt_name}_{timestamp}_{uuid.uuid4()}"
     
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # Create new entry dictionary
     entry_data = {
         'user_name': user_name,
@@ -73,10 +115,12 @@ def save_export_entry(
         'combination_temperature': str(combination_temperature) if combination_temperature is not None else '',
         'slider_weights': str(slider_weights) if slider_weights is not None else '',
         'rating': rating,
-        'remark': remark
+        'remark': remark,
+        'created_at': now,
+        'updated_at': now
     }
     
-    # Save to database
+    # Save to database for all users (including guests)
     db = get_db_connection()
     if db:
         success = db.save_export_result(**entry_data)
@@ -108,11 +152,27 @@ def load_user_results(user_name):
     return pd.DataFrame()
 
 def load_all_results_from_db():
-    """Load all export results from database to session state."""
+    """Load all export results from database to session state for non-guest users ONLY."""
     if 'user_name' in st.session_state:
         user_name = st.session_state.user_name
-        df = load_user_results(user_name)
+
+        # Check if user is a guest - if so, NEVER load from DB
+        if check_if_guest_user(user_name):
+            # Ensure guest session is properly initialized with empty data
+            if 'guest_session_initialized' not in st.session_state:
+                initialize_guest_session()
+            return False
+
+        # Non-guest users: load results from DB
+        # Initialize empty DataFrame first
+        st.session_state.export_data = pd.DataFrame(columns=[
+            'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt',
+            'query', 'response', 'status', 'status_code', 'timestamp',
+            'edited', 'step', 'combination_strategy', 'combination_temperature',
+            'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
+        ]).astype({'rating': 'Int64'})
         
+        df = load_user_results(user_name)
         if not df.empty:
             st.session_state.export_data = df.astype({'rating': 'Int64'})
             return True
@@ -122,7 +182,8 @@ def update_rating_in_db(unique_id, rating, remark):
     """Update rating and remark for a specific entry in database."""
     db = get_db_connection()
     if db:
-        success = db.update_export_rating(unique_id, rating, remark)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        success = db.update_export_rating(unique_id, rating, remark, updated_at=now)
         db.disconnect()
         return success
     return False
@@ -145,24 +206,44 @@ def get_export_statistics(user_name):
         return stats
     return None
 
+def reset_guest_session():
+    """Reset session state for guest users."""
+    initialize_guest_session()
+
 def render_export_section(query_text):
     """Render the export section with database integration."""
     st.header("📊 Export Results")
-    
-    # Load results from database on first render
-    if 'export_data_loaded' not in st.session_state:
-        load_all_results_from_db()
-        st.session_state.export_data_loaded = True
     
     # Initialize export_data if needed
     if 'export_data' not in st.session_state:
         st.session_state.export_data = pd.DataFrame(columns=[
             'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
             'status', 'status_code', 'timestamp', 'edited', 'step',
-            'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
+            'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark',
+            'created_at', 'updated_at'
         ]).astype({'rating': 'Int64'})
     
-    # Display statistics
+    # Check for guest user and ensure clean session
+    if check_if_guest_user():
+        # Initialize guest session if not already done
+        if 'guest_session_initialized' not in st.session_state:
+            initialize_guest_session()
+        
+        st.info("🔒 Guest Mode: You can run tests in this session, but previous session data won't be loaded on re-login.")
+        
+        # Display only current session data for guests
+        display_guest_session_data()
+        # Render clear results section for guests
+        render_clear_results_section(guest_mode=True)
+        return
+    
+    # For non-guest users: Load results from database on first render
+    if 'user_name' in st.session_state:
+        if 'export_data_loaded' not in st.session_state:
+            load_all_results_from_db()
+            st.session_state.export_data_loaded = True
+    
+    # Display statistics for non-guest users only
     if 'user_name' in st.session_state:
         stats = get_export_statistics(st.session_state.user_name)
         if stats:
@@ -195,9 +276,22 @@ def render_export_section(query_text):
             filtered_df = filtered_df[filtered_df['rating'].notna()]
         elif rating_filter == 'Unrated':
             filtered_df = filtered_df[filtered_df['rating'].isna()]
+
+        # Drop id and edited from display
+        drop_cols = [col for col in ['id', 'edited'] if col in filtered_df.columns]
+        filtered_df = filtered_df.drop(columns=drop_cols, errors='ignore')
+
+        # Ensure created_at and updated_at are always visible
+        if 'created_at' in filtered_df.columns:
+            filtered_df['created_at'] = filtered_df['created_at'].fillna(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
+        if 'updated_at' in filtered_df.columns:
+            filtered_df['updated_at'] = filtered_df['updated_at'].fillna(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
         
         st.dataframe(filtered_df, width='stretch')
-        
         
         # Predict Scores button
         st.subheader("🔮 Predict Scores")
@@ -224,13 +318,17 @@ def render_export_section(query_text):
                         with st.spinner("Predicting scores using LLM..."):
                             st.session_state.export_data = predict_scores_llm(st.session_state.export_data)
                             
-                            # Update predictions in database
+                            # Update predictions in database (for all users, including guests)
                             db = get_db_connection()
                             if db:
                                 for idx, row in st.session_state.export_data.iterrows():
                                     if pd.notna(row['rating']) and row['edited'] == False:
-                                        db.update_export_rating(row['unique_id'], int(row['rating']), 
-                                                              row['remark'] if pd.notna(row['remark']) else '')
+                                        db.update_export_rating(
+                                            row['unique_id'], 
+                                            int(row['rating']), 
+                                            row['remark'] if pd.notna(row['remark']) else '',
+                                            updated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                        )
                                 db.disconnect()
                             
                             if 'test_results' in st.session_state and not st.session_state.test_results.empty:
@@ -246,7 +344,7 @@ def render_export_section(query_text):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            csv = st.session_state.export_data.to_csv(index=False)
+            csv = filtered_df.to_csv(index=False)
             st.download_button(
                 label="📥 Download as CSV",
                 data=csv,
@@ -256,7 +354,8 @@ def render_export_section(query_text):
         
         with col2:
             excel_buffer = io.BytesIO()
-            st.session_state.export_data.to_excel(excel_buffer, index=False, sheet_name="Results", engine='openpyxl')
+            filtered_df.to_excel(excel_buffer, index=False, sheet_name="Results", engine='openpyxl')
+            excel_buffer.seek(0)
             st.download_button(
                 label="📥 Download as Excel",
                 data=excel_buffer.getvalue(),
@@ -266,42 +365,101 @@ def render_export_section(query_text):
         
         with col3:
             # Download filtered results
-            if not filtered_df.equals(st.session_state.export_data):
-                csv_filtered = filtered_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download Filtered CSV",
-                    data=csv_filtered,
-                    file_name=f"filtered_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
+            csv_filtered = filtered_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Filtered CSV",
+                data=csv_filtered,
+                file_name=f"filtered_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
     else:
         st.info("No results to export yet. Run some tests first!")
     
-    # Clear results section
+    # Render clear results section for non-guests
+    render_clear_results_section(guest_mode=False)
+
+def display_guest_session_data():
+    """Display current session data for guest users (no DB loading)."""
+    if not st.session_state.export_data.empty:
+        st.subheader("📋 Current Session Data")
+        
+        # Simplified filters for guests
+        col1, col2 = st.columns(2)
+        with col1:
+            test_types = ['All'] + list(st.session_state.export_data['test_type'].unique())
+            selected_type = st.selectbox("Filter by Test Type", test_types)
+        with col2:
+            rating_filter = st.selectbox("Filter by Rating", ['All', 'Rated', 'Unrated'])
+        
+        # Apply filters
+        filtered_df = st.session_state.export_data.copy()
+        if selected_type != 'All':
+            filtered_df = filtered_df[filtered_df['test_type'] == selected_type]
+        if rating_filter == 'Rated':
+            filtered_df = filtered_df[filtered_df['rating'].notna()]
+        elif rating_filter == 'Unrated':
+            filtered_df = filtered_df[filtered_df['rating'].isna()]
+
+        # Drop id and edited from display
+        drop_cols = [col for col in ['id', 'edited'] if col in filtered_df.columns]
+        filtered_df = filtered_df.drop(columns=drop_cols, errors='ignore')
+
+        # Ensure created_at and updated_at are always visible
+        if 'created_at' in filtered_df.columns:
+            filtered_df['created_at'] = filtered_df['created_at'].fillna(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
+        if 'updated_at' in filtered_df.columns:
+            filtered_df['updated_at'] = filtered_df['updated_at'].fillna(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
+        
+        st.dataframe(filtered_df, width='stretch')
+        
+        # Download buttons for session data
+        st.subheader("📥 Download Current Session")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv = filtered_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download as CSV",
+                data=csv,
+                file_name=f"guest_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        with col2:
+            excel_buffer = io.BytesIO()
+            filtered_df.to_excel(excel_buffer, index=False, sheet_name="Session Results", engine='openpyxl')
+            excel_buffer.seek(0)
+            st.download_button(
+                label="📥 Download as Excel",
+                data=excel_buffer.getvalue(),
+                file_name=f"guest_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    else:
+        st.info("No current session results yet. Run some tests!")
+
+def render_clear_results_section(guest_mode=False):
+    """Render clear results section, with modifications for guest mode."""
     st.subheader("🗑️ Clear Results")
     col1, col2 = st.columns(2)
     
     with col1:
         if st.button("🗑️ Clear Session Results", help="Clear results from current session only"):
-            st.session_state.export_data = pd.DataFrame(columns=[
-                'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
-                'status', 'status_code', 'timestamp', 'edited', 'step',
-                'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
-            ]).astype({'rating': 'Int64'})
-            st.session_state.test_results = pd.DataFrame(columns=[
-                'user_name', 'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 
-                'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
-            ])
-            st.session_state.chain_results = []
-            st.session_state.combination_results = {}
-            st.session_state.response_ratings = {}
+            if guest_mode:
+                initialize_guest_session()
+            else:
+                reset_guest_session()  # Uses same logic but different context
             st.success("Session results cleared!")
             st.rerun()
     
     with col2:
         if st.button("🗑️ Clear All Database Results", type="secondary", 
                     help="Delete all your results from database permanently"):
-            if 'user_name' in st.session_state:
+            if not guest_mode:
                 db = get_db_connection()
                 if db:
                     success = db.delete_all_user_export_results(st.session_state.user_name)
@@ -311,7 +469,8 @@ def render_export_section(query_text):
                         st.session_state.export_data = pd.DataFrame(columns=[
                             'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
                             'status', 'status_code', 'timestamp', 'edited', 'step',
-                            'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark'
+                            'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark',
+                            'created_at', 'updated_at'
                         ]).astype({'rating': 'Int64'})
                         st.success("All database results cleared!")
                         st.rerun()
@@ -319,6 +478,8 @@ def render_export_section(query_text):
                         st.error("Failed to clear database results")
                 else:
                     st.error("Database connection failed")
+            else:
+                st.warning("Guest users: Database results are not loaded, so this action has no effect. Use 'Clear Session Results' instead.")
 
 def sync_session_to_db():
     """Sync all session state results to database."""
