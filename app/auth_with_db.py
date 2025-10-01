@@ -159,13 +159,18 @@ def render_auth_page():
 
 
 def logout():
-    """Logout the current user."""
-    st.session_state.authenticated = False
-    st.session_state.user_name = "Unknown"
-    st.session_state.user_id = None
-    st.session_state.user_type = None
-    if 'guest_username' in st.session_state:
-        del st.session_state.guest_username
+    """Logout the current user and clear all session data."""
+    # Clear all session state variables
+    keys_to_clear = [
+        'authenticated', 'user_name', 'user_id', 'user_type', 'guest_username',
+        'export_data', 'export_data_loaded', 'guest_session_initialized',
+        'test_results', 'chain_results', 'combination_results', 'response_ratings'
+    ]
+    
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+    
     st.rerun()
 
 
