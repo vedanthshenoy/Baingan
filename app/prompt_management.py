@@ -433,4 +433,4 @@ def add_prompt_section():
             "Name": st.session_state.prompt_names,
             "Prompt": st.session_state.prompts
         })
-        st.dataframe(preview_df, use_container_width=True)
+        st.dataframe(preview_df, width='stretch')
