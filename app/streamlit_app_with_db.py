@@ -69,9 +69,17 @@ for key, val in defaults.items():
 if not render_auth_page():
     st.stop()  # Stop rendering the rest of the app if not authenticated
 
-# Title
-st.title("🔮 BainGan 🍆")
-st.markdown("Test **system prompts**, create **prompt chains**, and **combine prompts** with AI assistance")
+# Title and Logout section
+col_title, col_logout = st.columns([6, 1])
+with col_title:
+    st.title("🔮 BainGan 🍆")
+    st.markdown("Test **system prompts**, create **prompt chains**, and **combine prompts** with AI assistance")
+with col_logout:
+    if st.button("🚪 Logout"):
+        # Clear session state
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
 
 # Sidebar: API configuration
 st.sidebar.header("🔧 API Configuration")
