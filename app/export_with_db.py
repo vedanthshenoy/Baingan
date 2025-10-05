@@ -55,7 +55,15 @@ def initialize_guest_session():
         'query', 'response', 'status', 'status_code', 'timestamp',
         'edited', 'step', 'combination_strategy', 'combination_temperature',
         'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
-    ]).astype({'rating': 'Int64'})
+    ])
+    for col in st.session_state.export_data.columns:
+        if col == 'rating':
+            st.session_state.export_data[col] = st.session_state.export_data[col].astype('Int64')
+        elif col == 'edited':
+            st.session_state.export_data[col] = st.session_state.export_data[col].astype('bool')
+        else:
+            st.session_state.export_data[col] = st.session_state.export_data[col].astype('object')
+    
     st.session_state.test_results = pd.DataFrame(columns=[
         'user_name', 'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 
         'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
@@ -91,7 +99,14 @@ def save_export_entry(
             'status', 'status_code', 'timestamp', 'edited', 'step',
             'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark',
             'created_at', 'updated_at'
-        ]).astype({'rating': 'Int64'})
+        ])
+        for col in st.session_state.export_data.columns:
+            if col == 'rating':
+                st.session_state.export_data[col] = st.session_state.export_data[col].astype('Int64')
+            elif col == 'edited':
+                st.session_state.export_data[col] = st.session_state.export_data[col].astype('bool')
+            else:
+                st.session_state.export_data[col] = st.session_state.export_data[col].astype('object')
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     unique_id = f"{mode}_{prompt_name}_{timestamp}_{uuid.uuid4()}"
@@ -133,11 +148,31 @@ def save_export_entry(
     
     # Add to session state
     new_entry = pd.DataFrame([entry_data])
-    
+
     if st.session_state.export_data.empty:
+        # Initialize with proper dtypes for first entry
+        for col in new_entry.columns:
+            if col == 'rating':
+                new_entry[col] = new_entry[col].astype('Int64')
+            elif col == 'edited':
+                new_entry[col] = new_entry[col].astype('bool')
+            else:
+                new_entry[col] = new_entry[col].astype('object')
         st.session_state.export_data = new_entry
     else:
-        st.session_state.export_data = pd.concat([st.session_state.export_data, new_entry], ignore_index=True).astype({'rating': 'Int64'})
+        # Ensure new_entry has same dtypes as existing dataframe
+        for col in new_entry.columns:
+            if col == 'rating':
+                new_entry[col] = new_entry[col].astype('Int64')
+            elif col == 'edited':
+                new_entry[col] = new_entry[col].astype('bool')
+            else:
+                new_entry[col] = new_entry[col].astype('object')
+        
+        st.session_state.export_data = pd.concat(
+            [st.session_state.export_data, new_entry], 
+            ignore_index=True
+        )
 
     st.write(f"Added {mode} result: {unique_id}")
     return unique_id
@@ -170,8 +205,22 @@ def load_all_results_from_db():
         df = load_user_results(user_name)
         
         if df is not None and not df.empty:
-            # Successfully loaded data
-            st.session_state.export_data = df.astype({'rating': 'Int64'})
+            # Successfully loaded data - ensure proper dtypes
+            # First convert ALL columns to object type to avoid type inference issues
+            df = df.astype('object')
+            
+            # Then set specific types for special columns
+            if 'rating' in df.columns:
+                df['rating'] = df['rating'].astype('Int64')
+            if 'edited' in df.columns:
+                df['edited'] = df['edited'].astype('bool')
+            
+            # Ensure timestamp columns are strings
+            for col in ['created_at', 'updated_at', 'timestamp']:
+                if col in df.columns:
+                    df[col] = df[col].astype(str)
+            
+            st.session_state.export_data = df
             return True
         else:
             # No data found, but connection was successful
@@ -181,7 +230,14 @@ def load_all_results_from_db():
                 'query', 'response', 'status', 'status_code', 'timestamp',
                 'edited', 'step', 'combination_strategy', 'combination_temperature',
                 'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
-            ]).astype({'rating': 'Int64'})
+            ])
+            for col in st.session_state.export_data.columns:
+                if col == 'rating':
+                    st.session_state.export_data[col] = st.session_state.export_data[col].astype('Int64')
+                elif col == 'edited':
+                    st.session_state.export_data[col] = st.session_state.export_data[col].astype('bool')
+                else:
+                    st.session_state.export_data[col] = st.session_state.export_data[col].astype('object')
             return True  # Return True even if empty - connection was successful
             
     except Exception as e:
@@ -192,7 +248,14 @@ def load_all_results_from_db():
             'query', 'response', 'status', 'status_code', 'timestamp',
             'edited', 'step', 'combination_strategy', 'combination_temperature',
             'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
-        ]).astype({'rating': 'Int64'})
+        ])
+        for col in st.session_state.export_data.columns:
+            if col == 'rating':
+                st.session_state.export_data[col] = st.session_state.export_data[col].astype('Int64')
+            elif col == 'edited':
+                st.session_state.export_data[col] = st.session_state.export_data[col].astype('bool')
+            else:
+                st.session_state.export_data[col] = st.session_state.export_data[col].astype('object')
         return False
 
 def update_rating_in_db(unique_id, rating, remark):
@@ -238,7 +301,14 @@ def render_export_section(query_text):
             'status', 'status_code', 'timestamp', 'edited', 'step',
             'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark',
             'created_at', 'updated_at'
-        ]).astype({'rating': 'Int64'})
+        ])
+        for col in st.session_state.export_data.columns:
+            if col == 'rating':
+                st.session_state.export_data[col] = st.session_state.export_data[col].astype('Int64')
+            elif col == 'edited':
+                st.session_state.export_data[col] = st.session_state.export_data[col].astype('bool')
+            else:
+                st.session_state.export_data[col] = st.session_state.export_data[col].astype('object')
     
     # Check for guest user and ensure clean session
     if check_if_guest_user():
@@ -307,13 +377,14 @@ def render_export_section(query_text):
         filtered_df = filtered_df.drop(columns=drop_cols, errors='ignore')
 
         # Ensure created_at and updated_at are always visible
+        default_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if 'created_at' in filtered_df.columns:
-            filtered_df['created_at'] = filtered_df['created_at'].fillna(
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            filtered_df.loc[:, 'created_at'] = filtered_df['created_at'].apply(
+                lambda x: x if pd.notna(x) else default_timestamp
             )
         if 'updated_at' in filtered_df.columns:
-            filtered_df['updated_at'] = filtered_df['updated_at'].fillna(
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            filtered_df.loc[:, 'updated_at'] = filtered_df['updated_at'].apply(
+                lambda x: x if pd.notna(x) else default_timestamp
             )
         
         st.dataframe(filtered_df, width='stretch')
@@ -430,13 +501,14 @@ def display_guest_session_data():
         filtered_df = filtered_df.drop(columns=drop_cols, errors='ignore')
 
         # Ensure created_at and updated_at are always visible
+        default_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if 'created_at' in filtered_df.columns:
-            filtered_df['created_at'] = filtered_df['created_at'].fillna(
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            filtered_df.loc[:, 'created_at'] = filtered_df['created_at'].apply(
+                lambda x: x if pd.notna(x) else default_timestamp
             )
         if 'updated_at' in filtered_df.columns:
-            filtered_df['updated_at'] = filtered_df['updated_at'].fillna(
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            filtered_df.loc[:, 'updated_at'] = filtered_df['updated_at'].apply(
+                lambda x: x if pd.notna(x) else default_timestamp
             )
         
         st.dataframe(filtered_df, width='stretch')
@@ -496,7 +568,14 @@ def render_clear_results_section(guest_mode=False):
     #                         'status', 'status_code', 'timestamp', 'edited', 'step',
     #                         'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark',
     #                         'created_at', 'updated_at'
-    #                     ]).astype({'rating': 'Int64'})
+    #                     ])
+    #                     for col in st.session_state.export_data.columns:
+    #                         if col == 'rating':
+    #                             st.session_state.export_data[col] = st.session_state.export_data[col].astype('Int64')
+    #                         elif col == 'edited':
+    #                             st.session_state.export_data[col] = st.session_state.export_data[col].astype('bool')
+    #                         else:
+    #                             st.session_state.export_data[col] = st.session_state.export_data[col].astype('object')
     #                     st.success("All database results cleared!")
     #                     st.rerun()
     #                 else:
