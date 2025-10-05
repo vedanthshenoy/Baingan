@@ -153,30 +153,47 @@ def load_user_results(user_name):
 
 def load_all_results_from_db():
     """Load all export results from database to session state for non-guest users ONLY."""
-    if 'user_name' in st.session_state:
-        user_name = st.session_state.user_name
+    if 'user_name' not in st.session_state:
+        return False
 
-        # Check if user is a guest - if so, NEVER load from DB
-        if check_if_guest_user(user_name):
-            # Ensure guest session is properly initialized with empty data
-            if 'guest_session_initialized' not in st.session_state:
-                initialize_guest_session()
-            return False
+    user_name = st.session_state.user_name
 
-        # Non-guest users: load results from DB
-        # Initialize empty DataFrame first
+    # Check if user is a guest - if so, NEVER load from DB
+    if check_if_guest_user(user_name):
+        # Ensure guest session is properly initialized with empty data
+        if 'guest_session_initialized' not in st.session_state:
+            initialize_guest_session()
+        return False
+
+    # Non-guest users: load results from DB
+    try:
+        df = load_user_results(user_name)
+        
+        if df is not None and not df.empty:
+            # Successfully loaded data
+            st.session_state.export_data = df.astype({'rating': 'Int64'})
+            return True
+        else:
+            # No data found, but connection was successful
+            # Initialize empty DataFrame
+            st.session_state.export_data = pd.DataFrame(columns=[
+                'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt',
+                'query', 'response', 'status', 'status_code', 'timestamp',
+                'edited', 'step', 'combination_strategy', 'combination_temperature',
+                'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
+            ]).astype({'rating': 'Int64'})
+            return True  # Return True even if empty - connection was successful
+            
+    except Exception as e:
+        st.error(f"Error loading results from database: {str(e)}")
+        # Initialize empty DataFrame on error
         st.session_state.export_data = pd.DataFrame(columns=[
             'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt',
             'query', 'response', 'status', 'status_code', 'timestamp',
             'edited', 'step', 'combination_strategy', 'combination_temperature',
             'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
         ]).astype({'rating': 'Int64'})
-        
-        df = load_user_results(user_name)
-        if not df.empty:
-            st.session_state.export_data = df.astype({'rating': 'Int64'})
-            return True
-    return False
+        return False
 
 def update_rating_in_db(unique_id, rating, remark):
     """Update rating and remark for a specific entry in database."""
@@ -240,8 +257,15 @@ def render_export_section(query_text):
     # For non-guest users: Load results from database on first render
     if 'user_name' in st.session_state:
         if 'export_data_loaded' not in st.session_state:
-            load_all_results_from_db()
-            st.session_state.export_data_loaded = True
+            with st.spinner("Loading your results from database..."):
+                success = load_all_results_from_db()
+                if success:
+                    st.session_state.export_data_loaded = True
+                    if not st.session_state.export_data.empty:
+                        st.success(f"✅ Loaded {len(st.session_state.export_data)} results from database")
+                else:
+                    st.error("❌ Failed to load results from database. Please check your connection.")
+                    # Don't set the loaded flag so it can retry
     
     # Display statistics for non-guest users only
     if 'user_name' in st.session_state:
