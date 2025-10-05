@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import uuid
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+import io
 
 
 def ensure_prompt_names():
@@ -22,6 +24,148 @@ def ensure_prompt_ids():
         # If some stray ids exist (shouldn't normally happen), trim to match prompts
         if len(st.session_state.prompt_ids) > len(st.session_state.prompts):
             st.session_state.prompt_ids = st.session_state.prompt_ids[: len(st.session_state.prompts)]
+
+
+def process_single_prompt_row(row_data):
+    """Process a single row from Excel into prompt data structure"""
+    name, prompt_text = row_data
+    
+    if pd.isna(prompt_text) or not str(prompt_text).strip():
+        return None
+    
+    # Generate unique ID for this prompt
+    pid = str(uuid.uuid4())
+    
+    # Use provided name or generate default
+    prompt_name = str(name).strip() if not pd.isna(name) and str(name).strip() else f"Imported Prompt"
+    prompt_text = str(prompt_text).strip()
+    
+    # Create test result row
+    test_row = {
+        "unique_id": str(uuid.uuid4()),
+        "prompt_id": pid,
+        "prompt_name": prompt_name,
+        "system_prompt": prompt_text,
+        "query": None,
+        "response": None,
+        "status": None,
+        "status_code": None,
+        "timestamp": datetime.now().isoformat(),
+        "rating": None,
+        "remark": None,
+        "edited": False,
+    }
+    
+    return {
+        'pid': pid,
+        'name': prompt_name,
+        'text': prompt_text,
+        'test_row': test_row
+    }
+
+
+def upload_prompts_from_excel(uploaded_file):
+    """Process Excel file and add all prompts in parallel"""
+    try:
+        # Read Excel file
+        df = pd.read_excel(uploaded_file)
+        
+        # Validate columns - support multiple column name variations
+        name_col = None
+        prompt_col = None
+        
+        # Check for name column
+        for col in df.columns:
+            col_lower = str(col).lower().strip()
+            if col_lower in ['name', 'prompt name', 'prompt_name', 'promptname']:
+                name_col = col
+                break
+        
+        # Check for prompt text column
+        for col in df.columns:
+            col_lower = str(col).lower().strip()
+            if col_lower in ['prompt', 'system prompt', 'system_prompt', 'systemprompt', 'text', 'prompt text', 'prompt_text']:
+                prompt_col = col
+                break
+        
+        # If exact columns not found, try to infer from first 2 columns
+        if not prompt_col:
+            if len(df.columns) >= 2:
+                name_col = df.columns[0]
+                prompt_col = df.columns[1]
+                st.info(f"Using columns: '{name_col}' for names and '{prompt_col}' for prompts")
+            elif len(df.columns) == 1:
+                prompt_col = df.columns[0]
+                st.info(f"Using single column: '{prompt_col}' for prompts (auto-generating names)")
+            else:
+                st.error("Excel file must have at least one column with prompt text")
+                return 0
+        
+        # Prepare data for parallel processing
+        if name_col and prompt_col:
+            rows_data = [(row[name_col], row[prompt_col]) for _, row in df.iterrows()]
+        elif prompt_col:
+            rows_data = [(None, row[prompt_col]) for _, row in df.iterrows()]
+        else:
+            st.error("Could not identify prompt column")
+            return 0
+        
+        # Process all rows in parallel
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            results = list(executor.map(process_single_prompt_row, rows_data))
+        
+        # Filter out None results (invalid rows)
+        valid_results = [r for r in results if r is not None]
+        
+        if not valid_results:
+            st.warning("No valid prompts found in the Excel file")
+            return 0
+        
+        # Initialize tracking structures if needed
+        if 'prompt_status' not in st.session_state:
+            st.session_state.prompt_status = []
+        if 'recently_added_indices' not in st.session_state:
+            st.session_state.recently_added_indices = set()
+        if 'recently_updated_indices' not in st.session_state:
+            st.session_state.recently_updated_indices = set()
+        if 'prompt_ids' not in st.session_state:
+            st.session_state.prompt_ids = []
+        
+        # Ensure prompt_status is aligned with current prompts
+        while len(st.session_state.prompt_status) < len(st.session_state.prompts):
+            st.session_state.prompt_status.append('tested')  # Default for existing prompts
+        
+        # Batch add all prompts
+        base_index = len(st.session_state.prompts)
+        new_statuses = ['added'] * len(valid_results)  # Prepare statuses for new prompts
+        
+        for i, result in enumerate(valid_results):
+            st.session_state.prompts.append(result['text'])
+            st.session_state.prompt_names.append(result['name'])
+            st.session_state.prompt_ids.append(result['pid'])
+            st.session_state.recently_added_indices.add(base_index + i)
+        
+        # Extend prompt_status with new statuses
+        st.session_state.prompt_status.extend(new_statuses)
+        
+        # Batch add test result rows
+        test_rows_df = pd.DataFrame([r['test_row'] for r in valid_results])
+        st.session_state.test_results = pd.concat(
+            [st.session_state.test_results, test_rows_df], 
+            ignore_index=True
+        )
+        
+        # Reset prompts_just_added to avoid interfering with button logic
+        st.session_state.prompts_just_added = False
+        
+        # Success message without immediate rerun to preserve state
+        st.success(f"✅ Successfully imported {len(valid_results)} prompts!")
+        
+        return len(valid_results)
+        
+    except Exception as e:
+        st.error(f"Error processing Excel file: {str(e)}")
+        return 0
 
 
 def add_new_prompt_callback():
@@ -141,7 +285,7 @@ def save_prompt_callback(pid: str):
         # avoid breaking UI if DataFrame updates fail
         pass
 
-    # No need to explicitly refresh widget keys — pid-based keys are stable.
+    # No need to explicitly refresh widget keys – pid-based keys are stable.
 
 
 def remove_prompt_callback(pid: str):
@@ -206,7 +350,27 @@ def remove_prompt_callback(pid: str):
 def add_prompt_section():
     st.subheader("📜 Prompt Management")
 
-    # --- Add new prompt section first ---
+    # --- Excel Upload Section ---
+    st.markdown("### 📤 Bulk Import from Excel")
+    uploaded_file = st.file_uploader(
+        "Upload Excel file with prompts (Make sure the column has a Heading)",
+        type=['xlsx', 'xls'],
+        help="Excel should have columns: 'Name' and 'Prompt' (or similar). If only one column, it will be used for prompts."
+    )
+    
+    if uploaded_file is not None:
+        if st.button("🚀 Import Prompts", type="primary"):
+            with st.spinner("Processing prompts in parallel..."):
+                count = upload_prompts_from_excel(uploaded_file)
+                if count > 0:
+                    st.success(f"✅ Successfully imported {count} prompts!")
+                    st.rerun()
+    
+    st.markdown("---")
+
+    # --- Add new prompt section ---
+    st.markdown("### ➕ Add Single Prompt")
+    
     # Initialize inputs if missing
     if 'new_prompt_input' not in st.session_state:
         st.session_state.new_prompt_input = ""
@@ -221,6 +385,8 @@ def add_prompt_section():
     st.markdown("---")
 
     # --- Existing prompts section below ---
+    st.markdown("### 📝 Manage Existing Prompts")
+    
     # Ensure lists are aligned and stable ids exist
     ensure_prompt_names()
     ensure_prompt_ids()
@@ -245,7 +411,7 @@ def add_prompt_section():
         save_key = f"save_btn_{pid}"
         remove_key = f"remove_btn_{pid}"
 
-        with st.expander(f"Prompt {display_index+1}: {current_name}", expanded=True):
+        with st.expander(f"Prompt {display_index+1}: {current_name}", expanded=False):
             # Text & area widgets bound to pid-based keys
             st.text_input(f"Prompt {display_index+1} Name", value=current_name, key=name_key)
             st.text_area(f"Edit Prompt {display_index+1}", value=current_prompt_text, key=edit_key)

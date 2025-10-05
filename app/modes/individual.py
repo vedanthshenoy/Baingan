@@ -19,6 +19,8 @@ from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
 from app.utils import add_result_row
 from app.export import save_export_entry
+from app.export_with_db import save_export_entry #with db
+from app.export_with_db import update_rating_in_db
 
 # Load Gemini API key from .env
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -346,11 +348,11 @@ def render_individual_testing(
         st.info("No results to display yet. Run some tests first!")
         return
 
-    # Filter for individual tests with responses, without resetting index to preserve original indices
+    # Filter for individual tests with responses, using copy to avoid SettingWithCopyWarning
     individual_results = st.session_state.test_results[
         (st.session_state.test_results['test_type'] == 'Individual') &
         st.session_state.test_results['response'].notna()
-    ]
+    ].copy()
 
     if individual_results.empty:
         st.info("No individual test results to display.")
@@ -363,11 +365,13 @@ def render_individual_testing(
     except Exception:
         st.metric("Results", f"{len(individual_results)} tests")
 
-    # iterate and show expanders using original indices
-    for i, result in individual_results.iterrows():
+    # Iterate through the filtered results - use enumerate on iterrows to get display index
+    for display_idx, (original_idx, result) in enumerate(individual_results.iterrows()):
         unique_id = str(result['unique_id'])
-        prompt_name = result.get('prompt_name') or f"Prompt {i+1}"
+        prompt_name = result.get('prompt_name') or f"Prompt {display_idx+1}"
         status_color = "🟢" if result['status'] == 'Success' else "🔴"
+        
+        # Use unique_id in keys instead of original_idx to ensure uniqueness and persistence
         with st.expander(f"{status_color} {prompt_name} — {result.get('status', 'Unknown')}"):
             st.write("**System Prompt:**")
             st.text(result.get('system_prompt', ''))
@@ -379,7 +383,7 @@ def render_individual_testing(
                 "Response (editable):",
                 value=result['response'] if pd.notnull(result['response']) else "",
                 height=150,
-                key=f"edit_response_{i}"
+                key=f"edit_response_{unique_id}"
             )
 
             # Rating slider linked to unique_id - handle None ratings properly
@@ -396,27 +400,33 @@ def render_individual_testing(
                 min_value=0,
                 max_value=10,
                 value=current_rating,
-                key=f"rating_{i}"
+                key=f"rating_{unique_id}"
             )
 
             # Update ratings dynamically in DataFrames only when rating actually changes
             original_rating = result.get('rating')
             if (pd.isna(original_rating) and new_rating != 0) or (pd.notna(original_rating) and new_rating != original_rating):
                 st.session_state.response_ratings[unique_id] = new_rating
-                st.session_state.test_results.at[i, 'rating'] = new_rating
-                st.session_state.test_results.at[i, 'edited'] = True
-                if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                    export_mask = st.session_state.export_data['unique_id'] == unique_id
-                    if export_mask.any():
-                        st.session_state.export_data.loc[export_mask, 'rating'] = new_rating
-                        st.session_state.export_data.loc[export_mask, 'edited'] = True
+                st.session_state.test_results.at[original_idx, 'rating'] = new_rating
+                st.session_state.test_results.at[original_idx, 'edited'] = True
+                
+                remark = result.get('remark', '')
+                
+                if update_rating_in_db(unique_id, new_rating, remark):
+                    if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                        export_mask = st.session_state.export_data['unique_id'] == unique_id
+                        if export_mask.any():
+                            st.session_state.export_data.loc[export_mask, 'rating'] = new_rating
+                            st.session_state.export_data.loc[export_mask, 'edited'] = True
+                else:
+                    st.warning(f"Rating updated in session but failed to save to database")
                 # refresh UI so slider reflects everywhere
                 st.rerun()
 
             if edited_response != (result['response'] or ""):
-                if st.button("💾 Save Edited Response", key=f"save_edited_{i}"):
-                    st.session_state.test_results.at[i, 'response'] = edited_response
-                    st.session_state.test_results.at[i, 'edited'] = True
+                if st.button("💾 Save Edited Response", key=f"save_edited_{unique_id}"):
+                    st.session_state.test_results.at[original_idx, 'response'] = edited_response
+                    st.session_state.test_results.at[original_idx, 'edited'] = True
 
                     # save edited response to export and capture unique_id
                     saved_unique_id = save_export_entry(
@@ -437,27 +447,27 @@ def render_individual_testing(
                     st.session_state.response_ratings[saved_unique_id] = new_rating
 
                     # update the test_results row with the returned unique_id
-                    st.session_state.test_results.at[i, 'unique_id'] = saved_unique_id
-                    st.session_state.test_results.at[i, 'remark'] = 'Edited and saved'
+                    st.session_state.test_results.at[original_idx, 'unique_id'] = saved_unique_id
+                    st.session_state.test_results.at[original_idx, 'remark'] = 'Edited and saved'
                     st.success("Edited response saved.")
                     st.rerun()
 
             # Suggest Prompt (Gemini-assisted) with enhancement request
             suggest_disabled = not gemini_available
-            if st.button("🔮 Suggest Prompt Based on Response", key=f"suggest_btn_{i}", disabled=suggest_disabled):
+            if st.button("🔮 Suggest Prompt Based on Response", key=f"suggest_btn_{unique_id}", disabled=suggest_disabled):
                 # Show enhancement request input
-                st.session_state[f"show_enhancement_input_{i}"] = True
+                st.session_state[f"show_enhancement_input_{unique_id}"] = True
 
             # Show enhancement input if button was clicked
-            if st.session_state.get(f"show_enhancement_input_{i}"):
+            if st.session_state.get(f"show_enhancement_input_{unique_id}"):
                 enhancement_request = st.text_area(
                     "What improvements or enhancements do you expect? (Optional)",
                     placeholder="e.g., Make the response more detailed, add examples, change tone to be more professional...",
                     height=100,
-                    key=f"enhancement_input_{i}"
+                    key=f"enhancement_input_{unique_id}"
                 )
                 
-                if st.button("Submit", key=f"submit_enhancement_{i}"):
+                if st.button("Submit", key=f"submit_enhancement_{unique_id}"):
                     with st.spinner("Generating prompt suggestion..."):
                         # Get the current rating for this response
                         current_rating = st.session_state.response_ratings.get(unique_id)
@@ -471,30 +481,30 @@ def render_individual_testing(
                             rating=current_rating,
                             enhancement_request=enhancement_request if enhancement_request.strip() else None
                         )
-                        st.session_state[f"suggested_prompt_{i}"] = suggestion
-                        st.session_state[f"suggested_prompt_name_{i}"] = f"Suggested Prompt {len(st.session_state.get('prompts', [])) + 1}"
+                        st.session_state[f"suggested_prompt_{unique_id}"] = suggestion
+                        st.session_state[f"suggested_prompt_name_{unique_id}"] = f"Suggested Prompt {len(st.session_state.get('prompts', [])) + 1}"
                         # Clear the enhancement input display
-                        st.session_state[f"show_enhancement_input_{i}"] = False
+                        st.session_state[f"show_enhancement_input_{unique_id}"] = False
                         st.rerun()
 
             # If suggestion exists, show save / save & run / edit UI
-            if st.session_state.get(f"suggested_prompt_{i}"):
+            if st.session_state.get(f"suggested_prompt_{unique_id}"):
                 st.write("**Suggested System Prompt:**")
-                st.text_area("Suggested Prompt:", value=st.session_state[f"suggested_prompt_{i}"], height=120, key=f"suggested_display_{i}", disabled=True)
+                st.text_area("Suggested Prompt:", value=st.session_state[f"suggested_prompt_{unique_id}"], height=120, key=f"suggested_display_{unique_id}", disabled=True)
 
                 prompt_name_input = st.text_input(
                     "Name this suggested prompt:",
-                    value=st.session_state.get(f"suggested_prompt_name_{i}", f"Suggested Prompt {i+1}"),
-                    key=f"suggested_name_input_{i}"
+                    value=st.session_state.get(f"suggested_prompt_name_{unique_id}", f"Suggested Prompt {display_idx+1}"),
+                    key=f"suggested_name_input_{unique_id}"
                 )
 
                 c1, c2, c3 = st.columns(3)
 
                 # Save only
                 with c1:
-                    if st.button("💾 Save Prompt", key=f"save_suggest_{i}"):
-                        suggested_prompt = st.session_state.get(f"suggested_prompt_{i}")
-                        saved_name = prompt_name_input or f"Suggested Prompt {i+1}"
+                    if st.button("💾 Save Prompt", key=f"save_suggest_{unique_id}"):
+                        suggested_prompt = st.session_state.get(f"suggested_prompt_{unique_id}")
+                        saved_name = prompt_name_input or f"Suggested Prompt {display_idx+1}"
                         # Save to export_data via save_export_entry (Not executed)
                         saved_unique_id = save_export_entry(
                             prompt_name=saved_name,
@@ -539,16 +549,16 @@ def render_individual_testing(
                         st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
 
                         # clear suggestion state
-                        del st.session_state[f"suggested_prompt_{i}"]
-                        del st.session_state[f"suggested_prompt_name_{i}"]
+                        del st.session_state[f"suggested_prompt_{unique_id}"]
+                        del st.session_state[f"suggested_prompt_name_{unique_id}"]
                         st.success(f"Saved suggested prompt: {saved_name}")
                         st.rerun()
 
                 # Save & Run
                 with c2:
-                    if st.button("🏃 Save & Run Prompt", key=f"save_run_suggest_{i}"):
-                        suggested_prompt = st.session_state.get(f"suggested_prompt_{i}")
-                        saved_name = prompt_name_input or f"Suggested Prompt {i+1}"
+                    if st.button("🏃 Save & Run Prompt", key=f"save_run_suggest_{unique_id}"):
+                        suggested_prompt = st.session_state.get(f"suggested_prompt_{unique_id}")
+                        saved_name = prompt_name_input or f"Suggested Prompt {display_idx+1}"
                         with st.spinner("Running suggested prompt..."):
                             try:
                                 run_result = call_api_func(
@@ -613,15 +623,15 @@ def render_individual_testing(
 
                         # show immediate response and rating slider
                         st.write("**Response from Suggested Prompt:**")
-                        st.text_area("Response:", value=response_text or "", height=150, key=f"suggested_run_resp_{i}")
+                        st.text_area("Response:", value=response_text or "", height=150, key=f"suggested_run_resp_{unique_id}")
                         rating_val = st.slider(
                             "Rate this response (0-10):",
                             min_value=0,
                             max_value=10,
                             value=0,
-                            key=f"rating_suggested_{i}"
+                            key=f"rating_suggested_{unique_id}"
                         )
-                        if rating_val != 0 or (rating_val == 0 and st.button("Set rating to 0", key=f"set_zero_{i}")):
+                        if rating_val != 0 or (rating_val == 0 and st.button("Set rating to 0", key=f"set_zero_{unique_id}")):
                             st.session_state.response_ratings[saved_unique_id] = rating_val
                             # Update the new row, but since it's appended, we need to find its index
                             new_index = st.session_state.test_results.index[-1]
@@ -633,28 +643,28 @@ def render_individual_testing(
                             st.rerun()
 
                         # clear suggestion state
-                        del st.session_state[f"suggested_prompt_{i}"]
-                        del st.session_state[f"suggested_prompt_name_{i}"]
+                        del st.session_state[f"suggested_prompt_{unique_id}"]
+                        del st.session_state[f"suggested_prompt_name_{unique_id}"]
                         st.rerun()
 
                 # Edit Suggested Prompt
                 with c3:
-                    if st.button("✏️ Edit", key=f"edit_suggest_{i}"):
-                        st.session_state[f"edit_suggest_{i}_active"] = True
+                    if st.button("✏️ Edit", key=f"edit_suggest_{unique_id}"):
+                        st.session_state[f"edit_suggest_{unique_id}_active"] = True
 
-                    if st.session_state.get(f"edit_suggest_{i}_active", False):
+                    if st.session_state.get(f"edit_suggest_{unique_id}_active", False):
                         edited_suggestion = st.text_area(
                             "Edit Suggested Prompt:",
-                            value=st.session_state[f"suggested_prompt_{i}"],
+                            value=st.session_state[f"suggested_prompt_{unique_id}"],
                             height=100,
-                            key=f"edit_suggested_{i}"
+                            key=f"edit_suggested_{unique_id}"
                         )
                         edit_prompt_name = st.text_input(
                             "Prompt Name for Edited Prompt:",
-                            value=st.session_state[f"suggested_prompt_name_{i}"],
-                            key=f"edit_suggest_name_{i}"
+                            value=st.session_state[f"suggested_prompt_name_{unique_id}"],
+                            key=f"edit_suggest_name_{unique_id}"
                         )
-                        if st.button("💾 Save Edited Prompt", key=f"save_edited_suggest_{i}"):
+                        if st.button("💾 Save Edited Prompt", key=f"save_edited_suggest_{unique_id}"):
                             if edit_prompt_name.strip():
                                 # Save to export_data via save_export_entry (Not executed)
                                 saved_unique_id = save_export_entry(
@@ -700,9 +710,9 @@ def render_individual_testing(
                                 st.session_state.test_results = pd.concat([st.session_state.test_results, new_result], ignore_index=True)
 
                                 # clear suggestion and edit state
-                                st.session_state[f"edit_suggest_{i}_active"] = False
-                                del st.session_state[f"suggested_prompt_{i}"]
-                                del st.session_state[f"suggested_prompt_name_{i}"]
+                                st.session_state[f"edit_suggest_{unique_id}_active"] = False
+                                del st.session_state[f"suggested_prompt_{unique_id}"]
+                                del st.session_state[f"suggested_prompt_name_{unique_id}"]
                                 st.success(f"Saved edited prompt as: {edit_prompt_name.strip()}")
                                 st.rerun()
                             else:

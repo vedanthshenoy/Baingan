@@ -10,6 +10,8 @@ from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
 from app.utils import add_result_row
 from app.export import save_export_entry
+from app.export_with_db import save_export_entry #with db
+from app.export_with_db import update_rating_in_db
 
 # Load environment variables
 load_dotenv()
@@ -278,13 +280,24 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         st.session_state.response_ratings[unique_id] = new_rating
                         st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = new_rating
                         st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                        if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                            st.session_state.export_data.loc[
-                                st.session_state.export_data['unique_id'] == unique_id, 'rating'
-                            ] = new_rating
-                            st.session_state.export_data.loc[
-                                st.session_state.export_data['unique_id'] == unique_id, 'edited'
-                            ] = True
+                        
+                        # Get the remark for this entry
+                        remark_series = st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark']
+                        remark = remark_series.iloc[0] if not remark_series.empty else ''
+                        
+                        # UPDATE DATABASE
+                        from app.export_with_db import update_rating_in_db
+                        if update_rating_in_db(unique_id, new_rating, remark):
+                            if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                                st.session_state.export_data.loc[
+                                    st.session_state.export_data['unique_id'] == unique_id, 'rating'
+                                ] = new_rating
+                                st.session_state.export_data.loc[
+                                    st.session_state.export_data['unique_id'] == unique_id, 'edited'
+                                ] = True
+                        else:
+                            st.warning("Rating updated in session but failed to save to database")
+                        
                         st.rerun()
 
                     if edited_response != (result['response'] or ""):
@@ -341,7 +354,6 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                 with st.spinner("Generating updated prompt..."):
                                     try:
                                         genai.configure(api_key=gemini_api_key)
-                                        # Use the updated suggest_prompt_from_response function
                                         suggestion = suggest_prompt_from_response(
                                             existing_prompt=result['system_prompt'],
                                             target_response=edited_response,
@@ -434,33 +446,136 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                 except Exception as e:
                                     st.error(f"Error generating suggestion: {str(e)}")
 
-                    # If suggestion exists, show save / save & run UI
+                    # If suggestion exists, show save / save & run / edit UI (unified with Individual mode)
                     if f"suggested_prompt_{unique_id}" in st.session_state:
                         st.write("**Suggested System Prompt:**")
-                        st.text_area("Suggested Prompt:", value=st.session_state[f"suggested_prompt_{unique_id}"], height=120, key=f"suggested_display_{unique_id}", disabled=True)
+                        st.text_area(
+                            "Suggested Prompt:",
+                            value=st.session_state[f"suggested_prompt_{unique_id}"],
+                            height=120,
+                            key=f"suggested_display_{unique_id}",
+                            disabled=True
+                        )
 
-                        col_save, col_save_run, col_edit = st.columns(3)
+                        # Keep heading exactly as requested
+                        prompt_name_input = st.text_input(
+                            "Name this suggested prompt:",
+                            value=st.session_state.get(f"suggested_prompt_name_{unique_id}", f"Suggested Prompt for Step {step}"),
+                            key=f"suggested_name_input_{unique_id}"
+                        )
 
-                        with col_save:
-                            save_prompt_name = st.text_input(
-                                "Prompt Name:",
-                                value=st.session_state[f"suggested_prompt_name_{unique_id}"],
-                                key=f"suggest_save_name_{unique_id}"
-                            )
-                            if st.button("💾 Save as Prompt", key=f"save_suggest_{unique_id}"):
-                                if save_prompt_name.strip():
+                        c1, c2, c3 = st.columns(3)
+
+                        # Save only
+                        with c1:
+                            if st.button("💾 Save Prompt", key=f"save_suggest_{unique_id}"):
+                                suggested_prompt = st.session_state.get(f"suggested_prompt_{unique_id}")
+                                saved_name = prompt_name_input or f"Suggested Prompt for Step {step}"
+
+                                export_row_dict = {
+                                    'user_name': user_name,
+                                    'test_type': 'Chaining',
+                                    'prompt_name': saved_name,
+                                    'system_prompt': suggested_prompt,
+                                    'query': result['query'],
+                                    'response': 'Prompt saved but not executed',
+                                    'status': 'Not Executed',
+                                    'status_code': 'N/A',
+                                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    'rating': None,
+                                    'remark': f'Save only for step {step}',
+                                    'edited': False,
+                                    'step': step,
+                                    'combination_strategy': None,
+                                    'combination_temperature': None,
+                                    'slider_weights': None
+                                }
+
+                                maybe_uid = save_export_entry(
+                                    prompt_name=saved_name,
+                                    system_prompt=suggested_prompt,
+                                    query=result['query'],
+                                    response='Prompt saved but not executed',
+                                    mode='Chaining',
+                                    remark=f"Save only for step {step}",
+                                    status='Not Executed',
+                                    status_code='N/A',
+                                    rating=None,
+                                    step=step,
+                                    user_name=user_name
+                                )
+
+                                generated_uid = f"Chaining_{saved_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                                saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
+
+                                add_result_row(
+                                    test_type='Chaining',
+                                    prompt_name=saved_name,
+                                    system_prompt=suggested_prompt,
+                                    query=result['query'],
+                                    response='Prompt saved but not executed',
+                                    status='Not Executed',
+                                    status_code='N/A',
+                                    remark=f'Save only for step {step}',
+                                    rating=None,
+                                    edited=False,
+                                    step=step,
+                                    combination_strategy=None,
+                                    combination_temperature=None,
+                                    user_name=user_name
+                                )
+
+                                last_index = st.session_state.test_results.index[-1]
+                                if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
+                                    st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
+
+                                st.session_state.response_ratings[saved_unique_id] = None
+                                st.session_state.prompts.append(suggested_prompt)
+                                st.session_state.prompt_names.append(saved_name)
+                                del st.session_state[f"suggested_prompt_{unique_id}"]
+                                del st.session_state[f"suggested_prompt_name_{unique_id}"]
+                                st.success(f"Saved as new prompt: {saved_name}")
+                                st.rerun()
+
+                        # Save & Run
+                        with c2:
+                            if st.button("🏃 Save & Run Prompt", key=f"save_run_suggest_{unique_id}"):
+                                suggested_prompt = st.session_state.get(f"suggested_prompt_{unique_id}")
+                                saved_name = prompt_name_input or f"Suggested Prompt for Step {step}"
+
+                                st.session_state.prompts.append(suggested_prompt)
+                                st.session_state.prompt_names.append(saved_name)
+
+                                with st.spinner("Running new prompt..."):
+                                    try:
+                                        run_result = call_api_func(
+                                            system_prompt=suggested_prompt,
+                                            query=result['query'],
+                                            body_template=body_template,
+                                            headers=headers,
+                                            response_path=response_path
+                                        )
+                                        response_text = run_result.get('response', None)
+                                        status = run_result.get('status', 'Failed')
+                                        status_code = str(run_result.get('status_code', 'N/A'))
+                                    except Exception as e:
+                                        st.error(f"Error running suggested prompt: {str(e)}")
+                                        response_text = f"Error: {str(e)}"
+                                        status = 'Failed'
+                                        status_code = 'N/A'
+
                                     export_row_dict = {
                                         'user_name': user_name,
                                         'test_type': 'Chaining',
-                                        'prompt_name': save_prompt_name.strip(),
-                                        'system_prompt': st.session_state[f"suggested_prompt_{unique_id}"],
+                                        'prompt_name': saved_name,
+                                        'system_prompt': suggested_prompt,
                                         'query': result['query'],
-                                        'response': 'Prompt saved but not executed',
-                                        'status': 'Not Executed',
-                                        'status_code': 'N/A',
+                                        'response': response_text,
+                                        'status': status,
+                                        'status_code': status_code,
                                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                         'rating': None,
-                                        'remark': f'Save only for step {step}',
+                                        'remark': f'Saved and ran for step {step}',
                                         'edited': False,
                                         'step': step,
                                         'combination_strategy': None,
@@ -469,31 +584,31 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                     }
 
                                     maybe_uid = save_export_entry(
-                                        prompt_name=save_prompt_name.strip(),
-                                        system_prompt=st.session_state[f"suggested_prompt_{unique_id}"],
+                                        prompt_name=saved_name,
+                                        system_prompt=suggested_prompt,
                                         query=result['query'],
-                                        response='Prompt saved but not executed',
+                                        response=response_text,
                                         mode='Chaining',
-                                        remark=f"Save only for step {step}",
-                                        status='Not Executed',
-                                        status_code='N/A',
+                                        remark=f'Saved and ran for step {step}',
+                                        status=status,
+                                        status_code=status_code,
                                         rating=None,
                                         step=step,
                                         user_name=user_name
                                     )
 
-                                    generated_uid = f"Chaining_{save_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                                    generated_uid = f"Chaining_{saved_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
                                     saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
 
                                     add_result_row(
                                         test_type='Chaining',
-                                        prompt_name=save_prompt_name.strip(),
-                                        system_prompt=st.session_state[f"suggested_prompt_{unique_id}"],
+                                        prompt_name=saved_name,
+                                        system_prompt=suggested_prompt,
                                         query=result['query'],
-                                        response='Prompt saved but not executed',
-                                        status='Not Executed',
-                                        status_code='N/A',
-                                        remark=f'Save only for step {step}',
+                                        response=response_text,
+                                        status=status,
+                                        status_code=status_code,
+                                        remark=f'Saved and ran for step {step}',
                                         rating=None,
                                         edited=False,
                                         step=step,
@@ -507,110 +622,13 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                                         st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
 
                                     st.session_state.response_ratings[saved_unique_id] = None
-                                    st.session_state.prompts.append(st.session_state[f"suggested_prompt_{unique_id}"])
-                                    st.session_state.prompt_names.append(save_prompt_name.strip())
                                     del st.session_state[f"suggested_prompt_{unique_id}"]
                                     del st.session_state[f"suggested_prompt_name_{unique_id}"]
-                                    st.success(f"Saved as new prompt: {save_prompt_name.strip()}")
+                                    st.success(f"Saved and ran new prompt: {saved_name}")
                                     st.rerun()
-                                else:
-                                    st.error("Please provide a prompt name")
 
-                        with col_save_run:
-                            run_prompt_name = st.text_input(
-                                "Prompt Name:",
-                                value=st.session_state[f"suggested_prompt_name_{unique_id}"],
-                                key=f"suggest_run_name_{unique_id}"
-                            )
-                            if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggest_{unique_id}"):
-                                if run_prompt_name.strip():
-                                    st.session_state.prompts.append(st.session_state[f"suggested_prompt_{unique_id}"])
-                                    st.session_state.prompt_names.append(run_prompt_name.strip())
-
-                                    with st.spinner("Running new prompt..."):
-                                        try:
-                                            run_result = call_api_func(
-                                                system_prompt=st.session_state[f"suggested_prompt_{unique_id}"],
-                                                query=result['query'],
-                                                body_template=body_template,
-                                                headers=headers,
-                                                response_path=response_path
-                                            )
-                                            response_text = run_result.get('response', None)
-                                            status = run_result.get('status', 'Failed')
-                                            status_code = str(run_result.get('status_code', 'N/A'))
-                                        except Exception as e:
-                                            st.error(f"Error running suggested prompt: {str(e)}")
-                                            response_text = f"Error: {str(e)}"
-                                            status = 'Failed'
-                                            status_code = 'N/A'
-
-                                        export_row_dict = {
-                                            'user_name': user_name,
-                                            'test_type': 'Chaining',
-                                            'prompt_name': run_prompt_name.strip(),
-                                            'system_prompt': st.session_state[f"suggested_prompt_{unique_id}"],
-                                            'query': result['query'],
-                                            'response': response_text,
-                                            'status': status,
-                                            'status_code': status_code,
-                                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                            'rating': None,
-                                            'remark': f'Saved and ran for step {step}',
-                                            'edited': False,
-                                            'step': step,
-                                            'combination_strategy': None,
-                                            'combination_temperature': None,
-                                            'slider_weights': None
-                                        }
-
-                                        maybe_uid = save_export_entry(
-                                            prompt_name=run_prompt_name.strip(),
-                                            system_prompt=st.session_state[f"suggested_prompt_{unique_id}"],
-                                            query=result['query'],
-                                            response=response_text,
-                                            mode='Chaining',
-                                            remark=f'Saved and ran for step {step}',
-                                            status=status,
-                                            status_code=status_code,
-                                            rating=None,
-                                            step=step,
-                                            user_name=user_name
-                                        )
-
-                                        generated_uid = f"Chaining_{run_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
-                                        saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
-
-                                        add_result_row(
-                                            test_type='Chaining',
-                                            prompt_name=run_prompt_name.strip(),
-                                            system_prompt=st.session_state[f"suggested_prompt_{unique_id}"],
-                                            query=result['query'],
-                                            response=response_text,
-                                            status=status,
-                                            status_code=status_code,
-                                            remark=f'Saved and ran for step {step}',
-                                            rating=None,
-                                            edited=False,
-                                            step=step,
-                                            combination_strategy=None,
-                                            combination_temperature=None,
-                                            user_name=user_name
-                                        )
-
-                                        last_index = st.session_state.test_results.index[-1]
-                                        if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
-                                            st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
-
-                                        st.session_state.response_ratings[saved_unique_id] = None
-                                        del st.session_state[f"suggested_prompt_{unique_id}"]
-                                        del st.session_state[f"suggested_prompt_name_{unique_id}"]
-                                        st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
-                                        st.rerun()
-                                else:
-                                    st.error("Please provide a prompt name")
-
-                        with col_edit:
+                        # Edit Suggested Prompt
+                        with c3:
                             if st.button("✏️ Edit", key=f"edit_suggest_{unique_id}"):
                                 st.session_state[f"edit_suggest_{unique_id}_active"] = True
 

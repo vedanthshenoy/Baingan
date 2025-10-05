@@ -97,7 +97,6 @@ Examples:
                                 ratings.extend([random.randint(5, 7) for _ in range(missing_count)])
                             
                             return ratings[:len(unrated_batch)]
-                        
                         else:
                             logger.warning(f"API request failed with status {response.status}")
                             return [random.randint(5, 7) for _ in range(len(unrated_batch))]
@@ -131,6 +130,17 @@ Examples:
         
         # Ensure rating column is Int64 to support NaN
         df['rating'] = df['rating'].astype('Int64')
+        
+        # Handle special cases first
+        if 'status_code' in df.columns and 'status' in df.columns:
+            special_cases = df[
+                df['rating'].isna() &
+                ((df['status_code'] == "N/A") | (df['status'].str.lower() == "not executed"))
+            ].copy()
+            df.loc[special_cases.index, 'rating'] = 0
+            df.loc[special_cases.index, 'remark'] = df.loc[special_cases.index, 'remark'].apply(
+                lambda x: (x + " (Auto-set to 0: Not Executed)" if x else "Auto-set to 0: Not Executed") if pd.notna(x) else "Auto-set to 0: Not Executed"
+            )
         
         # Filter rated and unrated
         rated_df = df[(df['rating'] > 0) & df['edited']].head(8)  # Use more examples for better context
@@ -217,6 +227,17 @@ def predict_scores_llm(df: pd.DataFrame) -> pd.DataFrame:
     """
     # Ensure rating column is Int64 to support NaN
     df['rating'] = df['rating'].astype('Int64')
+    
+    # Handle special cases first
+    if 'status_code' in df.columns and 'status' in df.columns:
+        special_cases = df[
+            df['rating'].isna() &
+            ((df['status_code'] == "N/A") | (df['status'].str.lower() == "not executed"))
+        ].copy()
+        df.loc[special_cases.index, 'rating'] = 0
+        df.loc[special_cases.index, 'remark'] = df.loc[special_cases.index, 'remark'].apply(
+            lambda x: (x + " (Auto-set to 0: Not Executed)" if x else "Auto-set to 0: Not Executed") if pd.notna(x) else "Auto-set to 0: Not Executed"
+        )
     
     # Filter rated and unrated
     rated_df = df[(df['rating'] > 0) & df['edited']].head(8)  # More examples

@@ -1,3 +1,4 @@
+# combination.py (patched)
 import streamlit as st
 import google.generativeai as genai
 from datetime import datetime
@@ -8,6 +9,8 @@ from app.prompt_management import ensure_prompt_names
 from app.api_utils import call_api, suggest_prompt_from_response
 from app.utils import add_result_row
 from app.export import save_export_entry
+from app.export_with_db import save_export_entry #with db
+from app.export_with_db import update_rating_in_db
 
 def debug_log(message):
     """Log debug messages to session state instead of displaying on screen."""
@@ -565,10 +568,19 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         st.session_state.response_ratings[unique_id] = rating_value
                         individual_result['rating'] = rating_value
                         st.session_state.combination_results['individual_results'][i] = individual_result
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
-                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                        
+                        # Get remark
+                        remark_series = st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark']
+                        remark = remark_series.iloc[0] if not remark_series.empty else ''
+                        
+                        # UPDATE DATABASE
+                        if update_rating_in_db(unique_id, rating_value, remark):
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                            st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
+                            st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                        else:
+                            st.warning("Rating updated in session but failed to save to database")
                         st.rerun()
 
                     if edited_response != (individual_result['response'] or ""):
@@ -587,11 +599,11 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                 remark="Edited and saved",
                                 status=individual_result['status'],
                                 status_code=individual_result['status_code'],
+                                rating=st.session_state.response_ratings.get(unique_id, 0),
+                                step=str(individual_result.get('step')) if individual_result.get('step') else '',
                                 combination_strategy=st.session_state.combination_results.get('strategy'),
                                 combination_temperature=temperature,
                                 slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                rating=st.session_state.response_ratings.get(unique_id, 0),
-                                step=str(individual_result.get('step')) if individual_result.get('step') else '',
                                 edited=True,
                                 user_name=user_name
                             )
@@ -622,7 +634,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                             value="",  # Let Streamlit manage the value
                             height=100,
                             key=f"enhancement_request_individual_{i}_{unique_id}",
-                            help="e.g., 'Make the response more concise' or 'Include more technical details'"
+                            placeholder="e.g., Make the response more detailed, add examples, change tone to be more professional..."
                         )
                         if st.button("Submit Suggestion Request", key=f"submit_suggest_individual_{i}_{unique_id}"):
                             with st.spinner("Generating prompt suggestion..."):
@@ -653,20 +665,23 @@ Output ONLY the combined system prompt, without any additional text or explanati
                             disabled=True
                         )
 
+                        # Shared prompt name input (moved out of columns to match individual.py)
+                        prompt_name_input = st.text_input(
+                            "Name this suggested prompt:",
+                            value=st.session_state[f"suggested_prompt_name_individual_{i}_{unique_id}"],
+                            key=f"suggest_name_individual_{i}_{unique_id}"
+                        )
+
                         col_save, col_save_run, col_edit = st.columns(3)
 
                         with col_save:
-                            save_prompt_name = st.text_input(
-                                "Prompt Name:",
-                                value=st.session_state[f"suggested_prompt_name_individual_{i}_{unique_id}"],
-                                key=f"suggest_save_name_individual_{i}_{unique_id}"
-                            )
                             if st.button("💾 Save as Prompt", key=f"save_suggest_individual_{i}_{unique_id}"):
-                                if save_prompt_name.strip():
+                                saved_name = prompt_name_input.strip() or f"Suggested Prompt for {individual_result['prompt_name']}"
+                                if saved_name:
                                     export_row_dict = {
                                         'user_name': user_name,
                                         'test_type': 'Combination_Suggested',
-                                        'prompt_name': save_prompt_name.strip(),
+                                        'prompt_name': saved_name,
                                         'system_prompt': st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"],
                                         'query': query_text,
                                         'response': 'Prompt saved but not executed',
@@ -683,7 +698,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     }
 
                                     maybe_uid = save_export_entry(
-                                        prompt_name=save_prompt_name.strip(),
+                                        prompt_name=saved_name,
                                         system_prompt=st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"],
                                         query=query_text,
                                         response='Prompt saved but not executed',
@@ -699,12 +714,12 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         user_name=user_name
                                     )
 
-                                    generated_uid = f"Combination_Suggested_{save_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                                    generated_uid = f"Combination_Suggested_{saved_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
                                     saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
 
                                     add_result_row(
                                         test_type='Combination_Suggested',
-                                        prompt_name=save_prompt_name.strip(),
+                                        prompt_name=saved_name,
                                         system_prompt=st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"],
                                         query=query_text,
                                         response='Prompt saved but not executed',
@@ -725,24 +740,20 @@ Output ONLY the combined system prompt, without any additional text or explanati
 
                                     st.session_state.response_ratings[saved_unique_id] = 0
                                     st.session_state.prompts.append(st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"])
-                                    st.session_state.prompt_names.append(save_prompt_name.strip())
+                                    st.session_state.prompt_names.append(saved_name)
                                     del st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"]
                                     del st.session_state[f"suggested_prompt_name_individual_{i}_{unique_id}"]
-                                    st.success(f"Saved as new prompt: {save_prompt_name.strip()}")
+                                    st.success(f"Saved as new prompt: {saved_name}")
                                     st.rerun()
                                 else:
                                     st.error("Please provide a prompt name")
 
                         with col_save_run:
-                            run_prompt_name = st.text_input(
-                                "Prompt Name:",
-                                value=st.session_state[f"suggested_prompt_name_individual_{i}_{unique_id}"],
-                                key=f"suggest_run_name_individual_{i}_{unique_id}"
-                            )
                             if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggest_individual_{i}_{unique_id}"):
-                                if run_prompt_name.strip():
+                                saved_name = prompt_name_input.strip() or f"Suggested Prompt for {individual_result['prompt_name']}"
+                                if saved_name:
                                     st.session_state.prompts.append(st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"])
-                                    st.session_state.prompt_names.append(run_prompt_name.strip())
+                                    st.session_state.prompt_names.append(saved_name)
 
                                     with st.spinner("Running new prompt..."):
                                         try:
@@ -765,7 +776,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         export_row_dict = {
                                             'user_name': user_name,
                                             'test_type': 'Combination_Suggested',
-                                            'prompt_name': run_prompt_name.strip(),
+                                            'prompt_name': saved_name,
                                             'system_prompt': st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"],
                                             'query': query_text,
                                             'response': response_text,
@@ -782,7 +793,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         }
 
                                         maybe_uid = save_export_entry(
-                                            prompt_name=run_prompt_name.strip(),
+                                            prompt_name=saved_name,
                                             system_prompt=st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"],
                                             query=query_text,
                                             response=response_text,
@@ -798,12 +809,12 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                             user_name=user_name
                                         )
 
-                                        generated_uid = f"Combination_Suggested_{run_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                                        generated_uid = f"Combination_Suggested_{saved_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
                                         saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
 
                                         add_result_row(
                                             test_type='Combination_Suggested',
-                                            prompt_name=run_prompt_name.strip(),
+                                            prompt_name=saved_name,
                                             system_prompt=st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"],
                                             query=query_text,
                                             response=response_text,
@@ -827,7 +838,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         if 'suggested_results' not in st.session_state.combination_results:
                                             st.session_state.combination_results['suggested_results'] = []
                                         st.session_state.combination_results['suggested_results'].append({
-                                            'prompt_name': run_prompt_name.strip(),
+                                            'prompt_name': saved_name,
                                             'system_prompt': st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"],
                                             'response': response_text,
                                             'status': status,
@@ -841,7 +852,31 @@ Output ONLY the combined system prompt, without any additional text or explanati
 
                                         del st.session_state[f"suggested_prompt_individual_{i}_{unique_id}"]
                                         del st.session_state[f"suggested_prompt_name_individual_{i}_{unique_id}"]
-                                        st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
+                                        st.success(f"Saved and ran new prompt: {saved_name}")
+
+                                        # Add immediate response display and rating (to match individual.py)
+                                        st.write("**Response from Suggested Prompt:**")
+                                        st.text_area("Response:", value=response_text or "", height=150, key=f"suggested_run_resp_individual_{i}_{unique_id}")
+                                        rating_val = st.slider(
+                                            "Rate this response (0-10):",
+                                            min_value=0,
+                                            max_value=10,
+                                            value=0,
+                                            key=f"rating_suggested_individual_{i}_{unique_id}"
+                                        )
+                                        if rating_val != 0 or (rating_val == 0 and st.button("Set rating to 0", key=f"set_zero_individual_{i}_{unique_id}")):
+                                            st.session_state.response_ratings[saved_unique_id] = rating_val
+                                            # Update the new row in test_results (find by unique_id)
+                                            mask = st.session_state.test_results['unique_id'] == saved_unique_id
+                                            if mask.any():
+                                                st.session_state.test_results.loc[mask, 'rating'] = rating_val
+                                                st.session_state.test_results.loc[mask, 'edited'] = True
+                                            export_mask = st.session_state.export_data['unique_id'] == saved_unique_id
+                                            if export_mask.any():
+                                                st.session_state.export_data.loc[export_mask, 'rating'] = rating_val
+                                                st.session_state.export_data.loc[export_mask, 'edited'] = True
+                                            st.rerun()
+
                                         st.rerun()
                                 else:
                                     st.error("Please provide a prompt name")
@@ -893,26 +928,6 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                             status='Not Executed',
                                             status_code='N/A',
                                             rating=None,
-                                            step='',
-                                            combination_strategy=st.session_state.combination_results.get('strategy'),
-                                            combination_temperature=temperature,
-                                            slider_weights=st.session_state.combination_results.get('slider_weights'),
-                                            user_name=user_name
-                                        )
-
-                                        generated_uid = f"Combination_Suggested_{edit_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
-                                        saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
-
-                                        add_result_row(
-                                            test_type='Combination_Suggested',
-                                            prompt_name=edit_prompt_name.strip(),
-                                            system_prompt=edited_suggestion,
-                                            query=query_text,
-                                            response='Prompt saved but not executed',
-                                            status='Not Executed',
-                                            status_code='N/A',
-                                            remark='Save only',
-                                            rating=None,
                                             edited=False,
                                             step='',
                                             combination_strategy=st.session_state.combination_results.get('strategy'),
@@ -924,7 +939,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         if st.session_state.test_results.at[last_index, 'unique_id'] != saved_unique_id:
                                             st.session_state.test_results.at[last_index, 'unique_id'] = saved_unique_id
 
-                                        st.session_state.response_ratings[saved_unique_id] = 0
+                                        st.session_state.response_ratings[saved_unique_id] = None
                                         st.session_state.prompts.append(edited_suggestion)
                                         st.session_state.prompt_names.append(edit_prompt_name.strip())
                                         st.session_state[f"edit_suggest_individual_{i}_{unique_id}_active"] = False
@@ -980,10 +995,19 @@ Output ONLY the combined system prompt, without any additional text or explanati
                     st.session_state.response_ratings[unique_id] = rating_value
                     combined_result['rating'] = rating_value
                     st.session_state.combination_results['combined_result'] = combined_result
-                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
-                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                    st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
-                    st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                    
+                    # Get remark
+                    remark_series = st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark']
+                    remark = remark_series.iloc[0] if not remark_series.empty else ''
+                    
+                    # UPDATE DATABASE
+                    if update_rating_in_db(unique_id, rating_value, remark):
+                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
+                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
+                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                    else:
+                        st.warning("Rating updated in session but failed to save to database")
                     st.rerun()
 
                 if edited_response != (combined_result['response'] or ""):
@@ -1037,7 +1061,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         value="",  # Let Streamlit manage the value
                         height=100,
                         key=f"enhancement_request_combined_{unique_id}",
-                        help="e.g., 'Make the response more concise' or 'Include more technical details'"
+                        placeholder="e.g., Make the response more detailed, add examples, change tone to be more professional..."
                     )
                     if st.button("Submit Suggestion Request", key=f"submit_suggest_combined_{unique_id}"):
                         with st.spinner("Generating prompt suggestion..."):
@@ -1068,20 +1092,23 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         disabled=True
                     )
 
+                    # Shared prompt name input (moved out of columns to match individual.py)
+                    prompt_name_input = st.text_input(
+                        "Name this suggested prompt:",
+                        value=st.session_state[f"suggested_prompt_name_combined_{unique_id}"],
+                        key=f"suggest_name_combined_{unique_id}"
+                    )
+
                     col_save, col_save_run, col_edit = st.columns(3)
 
                     with col_save:
-                        save_prompt_name = st.text_input(
-                            "Prompt Name:",
-                            value=st.session_state[f"suggested_prompt_name_combined_{unique_id}"],
-                            key=f"suggest_save_name_combined_{unique_id}"
-                        )
                         if st.button("💾 Save as Prompt", key=f"save_suggest_combined_{unique_id}"):
-                            if save_prompt_name.strip():
+                            saved_name = prompt_name_input.strip() or "Suggested Prompt for Combined Response"
+                            if saved_name:
                                 export_row_dict = {
                                     'user_name': user_name,
                                     'test_type': 'Combination_Suggested',
-                                    'prompt_name': save_prompt_name.strip(),
+                                    'prompt_name': saved_name,
                                     'system_prompt': st.session_state[f"suggested_prompt_combined_{unique_id}"],
                                     'query': query_text,
                                     'response': 'Prompt saved but not executed',
@@ -1098,7 +1125,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                 }
 
                                 maybe_uid = save_export_entry(
-                                    prompt_name=save_prompt_name.strip(),
+                                    prompt_name=saved_name,
                                     system_prompt=st.session_state[f"suggested_prompt_combined_{unique_id}"],
                                     query=query_text,
                                     response='Prompt saved but not executed',
@@ -1114,12 +1141,12 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     user_name=user_name
                                 )
 
-                                generated_uid = f"Combination_Suggested_{save_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                                generated_uid = f"Combination_Suggested_{saved_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
                                 saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
 
                                 add_result_row(
                                     test_type='Combination_Suggested',
-                                    prompt_name=save_prompt_name.strip(),
+                                    prompt_name=saved_name,
                                     system_prompt=st.session_state[f"suggested_prompt_combined_{unique_id}"],
                                     query=query_text,
                                     response='Prompt saved but not executed',
@@ -1140,24 +1167,20 @@ Output ONLY the combined system prompt, without any additional text or explanati
 
                                 st.session_state.response_ratings[saved_unique_id] = 0
                                 st.session_state.prompts.append(st.session_state[f"suggested_prompt_combined_{unique_id}"])
-                                st.session_state.prompt_names.append(save_prompt_name.strip())
+                                st.session_state.prompt_names.append(saved_name)
                                 del st.session_state[f"suggested_prompt_combined_{unique_id}"]
                                 del st.session_state[f"suggested_prompt_name_combined_{unique_id}"]
-                                st.success(f"Saved as new prompt: {save_prompt_name.strip()}")
+                                st.success(f"Saved as new prompt: {saved_name}")
                                 st.rerun()
                             else:
                                 st.error("Please provide a prompt name")
 
                     with col_save_run:
-                        run_prompt_name = st.text_input(
-                            "Prompt Name:",
-                            value=st.session_state[f"suggested_prompt_name_combined_{unique_id}"],
-                            key=f"suggest_run_name_combined_{unique_id}"
-                        )
                         if st.button("🏃 Save as Prompt and Run", key=f"save_run_suggest_combined_{unique_id}"):
-                            if run_prompt_name.strip():
+                            saved_name = prompt_name_input.strip() or "Suggested Prompt for Combined Response"
+                            if saved_name:
                                 st.session_state.prompts.append(st.session_state[f"suggested_prompt_combined_{unique_id}"])
-                                st.session_state.prompt_names.append(run_prompt_name.strip())
+                                st.session_state.prompt_names.append(saved_name)
 
                                 with st.spinner("Running new prompt..."):
                                     try:
@@ -1180,7 +1203,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     export_row_dict = {
                                         'user_name': user_name,
                                         'test_type': 'Combination_Suggested',
-                                        'prompt_name': run_prompt_name.strip(),
+                                        'prompt_name': saved_name,
                                         'system_prompt': st.session_state[f"suggested_prompt_combined_{unique_id}"],
                                         'query': query_text,
                                         'response': response_text,
@@ -1197,7 +1220,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     }
 
                                     maybe_uid = save_export_entry(
-                                        prompt_name=run_prompt_name.strip(),
+                                        prompt_name=saved_name,
                                         system_prompt=st.session_state[f"suggested_prompt_combined_{unique_id}"],
                                         query=query_text,
                                         response=response_text,
@@ -1213,12 +1236,12 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                         user_name=user_name
                                     )
 
-                                    generated_uid = f"Combination_Suggested_{run_prompt_name.strip()}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
+                                    generated_uid = f"Combination_Suggested_{saved_name}_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_{uuid.uuid4()}"
                                     saved_unique_id = normalize_saved_uid(maybe_uid, export_row_dict, generated_uid=generated_uid)
 
                                     add_result_row(
                                         test_type='Combination_Suggested',
-                                        prompt_name=run_prompt_name.strip(),
+                                        prompt_name=saved_name,
                                         system_prompt=st.session_state[f"suggested_prompt_combined_{unique_id}"],
                                         query=query_text,
                                         response=response_text,
@@ -1242,7 +1265,7 @@ Output ONLY the combined system prompt, without any additional text or explanati
                                     if 'suggested_results' not in st.session_state.combination_results:
                                         st.session_state.combination_results['suggested_results'] = []
                                     st.session_state.combination_results['suggested_results'].append({
-                                        'prompt_name': run_prompt_name.strip(),
+                                        'prompt_name': saved_name,
                                         'system_prompt': st.session_state[f"suggested_prompt_combined_{unique_id}"],
                                         'response': response_text,
                                         'status': status,
@@ -1256,7 +1279,31 @@ Output ONLY the combined system prompt, without any additional text or explanati
 
                                     del st.session_state[f"suggested_prompt_combined_{unique_id}"]
                                     del st.session_state[f"suggested_prompt_name_combined_{unique_id}"]
-                                    st.success(f"Saved and ran new prompt: {run_prompt_name.strip()}")
+                                    st.success(f"Saved and ran new prompt: {saved_name}")
+
+                                    # Add immediate response display and rating (to match individual.py)
+                                    st.write("**Response from Suggested Prompt:**")
+                                    st.text_area("Response:", value=response_text or "", height=150, key=f"suggested_run_resp_combined_{unique_id}")
+                                    rating_val = st.slider(
+                                        "Rate this response (0-10):",
+                                        min_value=0,
+                                        max_value=10,
+                                        value=0,
+                                        key=f"rating_suggested_combined_{unique_id}"
+                                    )
+                                    if rating_val != 0 or (rating_val == 0 and st.button("Set rating to 0", key=f"set_zero_combined_{unique_id}")):
+                                        st.session_state.response_ratings[saved_unique_id] = rating_val
+                                        # Update the new row in test_results (find by unique_id)
+                                        mask = st.session_state.test_results['unique_id'] == saved_unique_id
+                                        if mask.any():
+                                            st.session_state.test_results.loc[mask, 'rating'] = rating_val
+                                            st.session_state.test_results.loc[mask, 'edited'] = True
+                                        export_mask = st.session_state.export_data['unique_id'] == saved_unique_id
+                                        if export_mask.any():
+                                            st.session_state.export_data.loc[export_mask, 'rating'] = rating_val
+                                            st.session_state.export_data.loc[export_mask, 'edited'] = True
+                                        st.rerun()
+
                                     st.rerun()
                             else:
                                 st.error("Please provide a prompt name")
@@ -1409,10 +1456,19 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         st.session_state.response_ratings[unique_id] = rating_value
                         suggested_result['rating'] = rating_value
                         st.session_state.combination_results['suggested_results'][i] = suggested_result
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
-                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                        
+                        # Get remark
+                        remark_series = st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark']
+                        remark = remark_series.iloc[0] if not remark_series.empty else ''
+                        
+                        # UPDATE DATABASE
+                        if update_rating_in_db(unique_id, rating_value, remark):
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                            st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
+                            st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                        else:
+                            st.warning("Rating updated in session but failed to save to database")
                         st.rerun()
 
                     if edited_response != (suggested_result['response'] or ""):
