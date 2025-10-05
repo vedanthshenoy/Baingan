@@ -10,6 +10,7 @@ from app.api_utils import call_api, suggest_prompt_from_response
 from app.utils import add_result_row
 from app.export import save_export_entry
 from app.export_with_db import save_export_entry #with db
+from app.export_with_db import update_rating_in_db
 
 def debug_log(message):
     """Log debug messages to session state instead of displaying on screen."""
@@ -567,10 +568,19 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         st.session_state.response_ratings[unique_id] = rating_value
                         individual_result['rating'] = rating_value
                         st.session_state.combination_results['individual_results'][i] = individual_result
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
-                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                        
+                        # Get remark
+                        remark_series = st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark']
+                        remark = remark_series.iloc[0] if not remark_series.empty else ''
+                        
+                        # UPDATE DATABASE
+                        if update_rating_in_db(unique_id, rating_value, remark):
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                            st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
+                            st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                        else:
+                            st.warning("Rating updated in session but failed to save to database")
                         st.rerun()
 
                     if edited_response != (individual_result['response'] or ""):
@@ -985,10 +995,19 @@ Output ONLY the combined system prompt, without any additional text or explanati
                     st.session_state.response_ratings[unique_id] = rating_value
                     combined_result['rating'] = rating_value
                     st.session_state.combination_results['combined_result'] = combined_result
-                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
-                    st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                    st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
-                    st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                    
+                    # Get remark
+                    remark_series = st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark']
+                    remark = remark_series.iloc[0] if not remark_series.empty else ''
+                    
+                    # UPDATE DATABASE
+                    if update_rating_in_db(unique_id, rating_value, remark):
+                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
+                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
+                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                    else:
+                        st.warning("Rating updated in session but failed to save to database")
                     st.rerun()
 
                 if edited_response != (combined_result['response'] or ""):
@@ -1437,10 +1456,19 @@ Output ONLY the combined system prompt, without any additional text or explanati
                         st.session_state.response_ratings[unique_id] = rating_value
                         suggested_result['rating'] = rating_value
                         st.session_state.combination_results['suggested_results'][i] = suggested_result
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
-                        st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
-                        st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                        
+                        # Get remark
+                        remark_series = st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark']
+                        remark = remark_series.iloc[0] if not remark_series.empty else ''
+                        
+                        # UPDATE DATABASE
+                        if update_rating_in_db(unique_id, rating_value, remark):
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = rating_value
+                            st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
+                            st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'rating'] = rating_value
+                            st.session_state.export_data.loc[st.session_state.export_data['unique_id'] == unique_id, 'edited'] = True
+                        else:
+                            st.warning("Rating updated in session but failed to save to database")
                         st.rerun()
 
                     if edited_response != (suggested_result['response'] or ""):
