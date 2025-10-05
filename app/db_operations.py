@@ -315,10 +315,14 @@ class DatabaseManager:
             print(f"Error fetching export results: {e}")
             return pd.DataFrame()
     
-    def update_export_rating(self, unique_id, rating, remark):
+    def update_export_rating(self, unique_id, rating, remark, updated_at=None):
         """Update rating and remark for a specific export result."""
         try:
             cursor = self.connection.cursor()
+            
+            if updated_at is None:
+                updated_at = datetime.now()
+            
             cursor.execute("""
                 UPDATE export_results
                 SET rating = %s,
@@ -326,8 +330,7 @@ class DatabaseManager:
                     edited = TRUE,
                     updated_at = %s
                 WHERE unique_id = %s
-            """, (rating, remark, datetime.now(), unique_id))
-
+            """, (rating, remark, updated_at, unique_id))
             
             self.connection.commit()
             cursor.close()
@@ -385,6 +388,27 @@ class DatabaseManager:
             """, (user_name,))
             
             stats = cursor.fetchone()
+            
+            # Calculate median separately
+            cursor.execute("""
+                SELECT rating
+                FROM export_results
+                WHERE user_name = %s AND rating IS NOT NULL
+                ORDER BY rating
+            """, (user_name,))
+            
+            ratings = [row['rating'] for row in cursor.fetchall()]
+            
+            if ratings:
+                n = len(ratings)
+                if n % 2 == 0:
+                    median_rating = (ratings[n//2 - 1] + ratings[n//2]) / 2.0
+                else:
+                    median_rating = ratings[n//2]
+                stats['median_rating'] = median_rating
+            else:
+                stats['median_rating'] = None
+            
             cursor.close()
             return stats
         except Error as e:
