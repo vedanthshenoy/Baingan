@@ -20,6 +20,7 @@ from app.api_utils import call_api, suggest_prompt_from_response
 from app.utils import add_result_row
 from app.export import save_export_entry
 from app.export_with_db import save_export_entry #with db
+from app.export_with_db import update_rating_in_db
 
 # Load Gemini API key from .env
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -408,11 +409,17 @@ def render_individual_testing(
                 st.session_state.response_ratings[unique_id] = new_rating
                 st.session_state.test_results.at[original_idx, 'rating'] = new_rating
                 st.session_state.test_results.at[original_idx, 'edited'] = True
-                if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                    export_mask = st.session_state.export_data['unique_id'] == unique_id
-                    if export_mask.any():
-                        st.session_state.export_data.loc[export_mask, 'rating'] = new_rating
-                        st.session_state.export_data.loc[export_mask, 'edited'] = True
+                
+                remark = result.get('remark', '')
+                
+                if update_rating_in_db(unique_id, new_rating, remark):
+                    if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                        export_mask = st.session_state.export_data['unique_id'] == unique_id
+                        if export_mask.any():
+                            st.session_state.export_data.loc[export_mask, 'rating'] = new_rating
+                            st.session_state.export_data.loc[export_mask, 'edited'] = True
+                else:
+                    st.warning(f"Rating updated in session but failed to save to database")
                 # refresh UI so slider reflects everywhere
                 st.rerun()
 
