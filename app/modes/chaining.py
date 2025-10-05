@@ -11,6 +11,7 @@ from app.api_utils import call_api, suggest_prompt_from_response
 from app.utils import add_result_row
 from app.export import save_export_entry
 from app.export_with_db import save_export_entry #with db
+from app.export_with_db import update_rating_in_db
 
 # Load environment variables
 load_dotenv()
@@ -279,13 +280,24 @@ def render_prompt_chaining(api_url, query_text, body_template, headers, response
                         st.session_state.response_ratings[unique_id] = new_rating
                         st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'rating'] = new_rating
                         st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'edited'] = True
-                        if 'export_data' in st.session_state and not st.session_state.export_data.empty:
-                            st.session_state.export_data.loc[
-                                st.session_state.export_data['unique_id'] == unique_id, 'rating'
-                            ] = new_rating
-                            st.session_state.export_data.loc[
-                                st.session_state.export_data['unique_id'] == unique_id, 'edited'
-                            ] = True
+                        
+                        # Get the remark for this entry
+                        remark_series = st.session_state.test_results.loc[st.session_state.test_results['unique_id'] == unique_id, 'remark']
+                        remark = remark_series.iloc[0] if not remark_series.empty else ''
+                        
+                        # UPDATE DATABASE
+                        from app.export_with_db import update_rating_in_db
+                        if update_rating_in_db(unique_id, new_rating, remark):
+                            if 'export_data' in st.session_state and not st.session_state.export_data.empty:
+                                st.session_state.export_data.loc[
+                                    st.session_state.export_data['unique_id'] == unique_id, 'rating'
+                                ] = new_rating
+                                st.session_state.export_data.loc[
+                                    st.session_state.export_data['unique_id'] == unique_id, 'edited'
+                                ] = True
+                        else:
+                            st.warning("Rating updated in session but failed to save to database")
+                        
                         st.rerun()
 
                     if edited_response != (result['response'] or ""):
