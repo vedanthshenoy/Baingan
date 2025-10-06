@@ -5,11 +5,7 @@ from datetime import datetime
 import streamlit as st
 from typing import Dict, Optional, Union, List, Tuple
 from urllib.parse import urlencode
-# import logging
-
-# # Set up logging
-# logging.basicConfig(level=logging.INFO)
-# logger = logging.getLogger(__name__)
+import uuid
 
 def call_api(
     query: str,
@@ -25,23 +21,8 @@ def call_api(
     """
     Generic function to call any API with flexible parameters, compatible with Streamlit.
     Automatically formats templates and retries with fallback templates on errors.
-
-    Args:
-        query: The main query or user input to send.
-        system_prompt: Optional system prompt to include in the request body.
-        body_template: Optional string or dict for the request body. Placeholders {query} and {system_prompt} are replaced.
-        headers: Optional dictionary of headers (e.g., {"Content-Type": "application/json"}).
-        response_path: Optional dot-separated path to extract response data (e.g., "response").
-        method: HTTP method (e.g., GET, POST, PUT). Defaults to POST.
-        query_params: Optional dictionary of query parameters to append to the URL.
-        auth: Optional dictionary for authentication (e.g., {"api_key": "key", "type": "bearer"}).
-        api_url: Optional API endpoint URL. If not provided, falls back to st.session_state.api_url.
-
-    Returns:
-        Dictionary with 'response', 'status', and 'status_code'.
     """
     try:
-        # Use provided api_url or fall back to st.session_state.api_url
         target_url = api_url or st.session_state.get('api_url', '')
         if not target_url:
             return {
@@ -50,15 +31,12 @@ def call_api(
                 'status_code': 'N/A'
             }
 
-        # Default headers if none provided
         headers = headers or {"Content-Type": "application/json"}
         
-        # Handle query parameters
         url = target_url
         if query_params:
             url = f"{target_url}?{urlencode(query_params)}"
         
-        # Handle authentication
         if auth:
             if auth.get("type") == "bearer":
                 headers["Authorization"] = f"Bearer {auth.get('api_key')}"
@@ -68,14 +46,12 @@ def call_api(
             elif auth.get("type") == "header":
                 headers["X-API-Key"] = auth.get("api_key")
 
-        # Start with the initial template
         current_template = body_template if isinstance(body_template, str) else json.dumps(body_template) if body_template else None
         max_retries = 3
         attempt = 0
         last_error = None
 
         while attempt < max_retries:
-            # Prepare the request body
             body = None
             if current_template:
                 if isinstance(current_template, dict):
@@ -89,7 +65,6 @@ def call_api(
                     safe_system = system_prompt.replace("\n", "\\n").replace("\"", "\\\"") if system_prompt else ""
                     body = json.loads(current_template.replace("{query}", safe_query).replace("{system_prompt}", safe_system))
 
-            # Make the API request
             if method.upper() == 'POST':
                 response = requests.post(url, headers=headers, json=body, timeout=30)
             elif method.upper() == 'GET':
@@ -101,12 +76,11 @@ def call_api(
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
-            # If success, process and return
             if response.status_code in (200, 201):
                 try:
                     response_data = response.json()
                 except json.JSONDecodeError:
-                    response_data = {'text': response.text}  # Fallback for non-JSON responses
+                    response_data = {'text': response.text}
 
                 response_text = response_data
                 if response_path:
@@ -121,7 +95,6 @@ def call_api(
                 else:
                     response_text = str(response_data)
 
-                # If we had retries, store the successful template for the next run
                 if attempt > 0:
                     st.session_state.suggested_body_template = current_template
 
@@ -130,14 +103,10 @@ def call_api(
                     'status': 'Success' + (' (after retries)' if attempt > 0 else ''),
                     'status_code': response.status_code
                 }
-
-            # If error, increment attempt
             else:
                 last_error = response.text
                 attempt += 1
 
-        # If max retries exceeded
-        # logger.error(f"Max retries ({max_retries}) exceeded with error: {last_error}")
         return {
             'response': f"Error: Max retries exceeded - {last_error}",
             'status': 'Error',
@@ -145,48 +114,140 @@ def call_api(
         }
 
     except Exception as e:
-        # logger.error(f"Unexpected error: {str(e)}")
         return {
             'response': f"Error: {str(e)}",
             'status': 'Unknown Error',
             'status_code': 'N/A'
         }
 
-def format_request_template(template_str: str) -> Tuple[str, str]:
+
+def show_system_prompt_preference_dialog():
+    """
+    Show a dialog asking user's preference for handling system prompt when only query field exists.
+    Returns True if dialog was shown and choice was made, False otherwise.
+    """
+    # Check if we need to show the dialog
+    if 'system_prompt_preference' not in st.session_state:
+        st.session_state.system_prompt_preference = None
+    
+    if 'show_prompt_preference_dialog' in st.session_state and st.session_state.show_prompt_preference_dialog:
+        st.markdown("---")
+        st.markdown("### 🔧 System Prompt Configuration")
+        st.info("""
+        The template only has a `query` field. How would you like to handle the system prompt?
+        """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🎯 Query Only", use_container_width=True, type="secondary"):
+                st.session_state.system_prompt_preference = "query_only"
+                if 'pending_template' in st.session_state:
+                    pending = st.session_state.pending_template
+                    try:
+                        pending_json = json.loads(pending)
+                        formatted_json = _apply_query_only_format(pending_json)
+                        changes_made = "Template formatted with query only (user preference)"
+                        formatted_template = json.dumps(formatted_json, ensure_ascii=False, indent=2).strip()
+                        st.session_state.body_template = formatted_template
+                        st.session_state.display_body_template = formatted_template
+                        st.session_state.persisted_body_template = formatted_template
+                        st.session_state.body_template_key = str(uuid.uuid4())
+                        del st.session_state.pending_template
+                        st.session_state.show_prompt_preference_dialog = False
+                        st.session_state.format_message = f"✅ Template formatted! **Changes:** {changes_made}"
+                    except json.JSONDecodeError:
+                        st.session_state.format_message = "❌ Invalid JSON in pending template."
+                st.rerun()
+                
+        with col2:
+            if st.button("📋 Include System Prompt", use_container_width=True, type="primary"):
+                st.session_state.system_prompt_preference = "include_system"
+                if 'pending_template' in st.session_state:
+                    pending = st.session_state.pending_template
+                    try:
+                        pending_json = json.loads(pending)
+                        formatted_json = _apply_combined_format(pending_json)
+                        changes_made = "Template formatted with system prompt + query combined (user preference)"
+                        formatted_template = json.dumps(formatted_json, ensure_ascii=False, indent=2).strip()
+                        st.session_state.body_template = formatted_template
+                        st.session_state.display_body_template = formatted_template
+                        st.session_state.persisted_body_template = formatted_template
+                        st.session_state.body_template_key = str(uuid.uuid4())
+                        del st.session_state.pending_template
+                        st.session_state.show_prompt_preference_dialog = False
+                        st.session_state.format_message = f"✅ Template formatted! **Changes:** {changes_made}"
+                    except json.JSONDecodeError:
+                        st.session_state.format_message = "❌ Invalid JSON in pending template."
+                st.rerun()
+        
+        st.markdown("""
+        **Query Only:** `{"query": "{query}"}`  
+        **Include System Prompt:** `{"query": "{system_prompt}\\n\\n{query}"}`
+        """)
+        
+        return True
+    
+    return False
+
+
+def format_request_template(template_str: str, force_dialog: bool = False) -> Tuple[str, str, bool]:
     """
     Format the request template to convert swagger/postman format to LLM format.
     
     Args:
         template_str: Original template string from user
+        force_dialog: If True, show dialog even if preference exists
         
     Returns:
-        Tuple of (formatted_template, changes_made_description)
+        Tuple of (formatted_template, changes_made_description, needs_dialog)
     """
     if not st.session_state.get('gemini_api_key'):
-        return template_str, "Gemini API key required for auto-formatting"
+        return template_str, "Gemini API key required for auto-formatting", False
     
     try:
         # First validate if it's valid JSON
         try:
             json.loads(template_str)
         except json.JSONDecodeError:
-            return template_str, "Invalid JSON format"
+            return template_str, "Invalid JSON format", False
         
         # Parse the template as JSON
         try:
             template_json = json.loads(template_str)
         except json.JSONDecodeError:
-            return template_str, "Invalid JSON format"
+            return template_str, "Invalid JSON format", False
 
         # Check if the template is already in the correct format
         template_str_test = template_str.replace("{system_prompt}", "test_system").replace("{query}", "test_query")
         try:
             json.loads(template_str_test)
             if "{system_prompt}" in template_str or "{query}" in template_str:
-                return template_str, "No changes needed - template already in correct format with proper placeholders"
+                return template_str, "No changes needed - template already in correct format with proper placeholders", False
         except json.JSONDecodeError:
-            pass  # Proceed to format the template
+            pass
 
+        # Check if template has only query field (single prompt field case)
+        has_only_query = _check_single_query_field(template_json)
+        
+        if has_only_query:
+            # Check if user preference is set
+            if force_dialog or 'system_prompt_preference' not in st.session_state or st.session_state.system_prompt_preference is None:
+                # Need to show dialog
+                return template_str, "Awaiting user preference for system prompt handling", True
+            
+            # Apply user preference
+            preference = st.session_state.system_prompt_preference
+            if preference == "query_only":
+                formatted_json = _apply_query_only_format(template_json)
+                formatted_template = json.dumps(formatted_json, ensure_ascii=False, indent=2)
+                return formatted_template, "Template formatted with query only (user preference)", False
+            elif preference == "include_system":
+                formatted_json = _apply_combined_format(template_json)
+                formatted_template = json.dumps(formatted_json, ensure_ascii=False, indent=2)
+                return formatted_template, "Template formatted with system prompt + query combined (user preference)", False
+
+        # Continue with normal Gemini-based formatting for other cases
         model = genai.GenerativeModel('gemini-2.5-flash')
         
         format_prompt = f"""
@@ -229,19 +290,6 @@ Rules for conversion:
 
 Output format:
 Return ONLY the formatted JSON template, nothing else.
-
-Example transformations:
-{{"system_prompt": "string", "user_prompt": "string"}} 
-→ {{"system_prompt": "{{system_prompt}}", "user_prompt": "{{query}}"}}
-
-{{"query": "string", "max_tokens": "int"}}
-→ {{"query": "{{query}}", "max_tokens": 5000}}
-
-{{"prompt": "string"}}
-→ {{"prompt": "{{query}}"}}
-
-{{"messages": [{{"role": "user", "content": "string"}}]}}
-→ {{"messages": [{{"role": "system", "content": "{{system_prompt}}"}}, {{"role": "user", "content": "{{query}}"}}]}}
 """
         
         generation_config = genai.types.GenerationConfig(
@@ -253,8 +301,6 @@ Example transformations:
             response = model.generate_content(format_prompt, generation_config=generation_config)
             formatted_template = response.text.strip()
         except Exception as e:
-            # logger.error(f"Gemini error: {str(e)}")
-            # Fallback: Manually transform the template based on rules
             formatted_template = template_str
             changes = []
             
@@ -294,7 +340,6 @@ Example transformations:
                         if key in prompt_fields:
                             has_prompt_field = True if key == "system_prompt" else has_user_field or True
                 
-                # If only one prompt field exists, ensure both system and user prompts are included
                 if has_prompt_field and not has_user_field and "messages" not in formatted_json:
                     formatted_json["user_prompt"] = "{query}"
                     changes.append("Added 'user_prompt' field with '{query}'")
@@ -305,9 +350,9 @@ Example transformations:
                 formatted_template = json.dumps(formatted_json, ensure_ascii=False)
             
             changes_made = "; ".join(changes) if changes else "Template converted to LLM-compatible format"
-            return formatted_template, changes_made
+            return formatted_template, changes_made, False
         
-        # Clean up response - remove code blocks if present
+        # Clean up response
         if formatted_template.startswith('```'):
             lines = formatted_template.split('\n')
             formatted_template = '\n'.join([line for line in lines if not line.strip().startswith('```')])
@@ -319,8 +364,7 @@ Example transformations:
             test_template = formatted_template.replace("{system_prompt}", "test_system").replace("{query}", "test_query")
             json.loads(test_template)
         except json.JSONDecodeError:
-            # logger.error(f"Gemini returned invalid JSON: {formatted_template}")
-            # Fallback to manual transformation as above
+            # Fallback formatting logic (same as above)
             formatted_json = {}
             changes = []
             
@@ -359,7 +403,6 @@ Example transformations:
                         if key in prompt_fields:
                             has_prompt_field = True if key == "system_prompt" else has_user_field or True
                 
-                # If only one prompt field exists, ensure both system and user prompts are included
                 if has_prompt_field and not has_user_field and "messages" not in formatted_json:
                     formatted_json["user_prompt"] = "{query}"
                     changes.append("Added 'user_prompt' field with '{query}'")
@@ -369,16 +412,80 @@ Example transformations:
                 
                 formatted_template = json.dumps(formatted_json, ensure_ascii=False)
                 changes_made = "; ".join(changes) if changes else "Template converted to LLM-compatible format"
-                return formatted_template, changes_made
+                return formatted_template, changes_made, False
         
-        # Determine what changes were made
         changes_made = _describe_template_changes(template_str, formatted_template)
         
-        return formatted_template, changes_made
+        return formatted_template, changes_made, False
         
     except Exception as e:
-        # logger.error(f"Error formatting template: {str(e)}")
-        return template_str, f"Error during formatting: {str(e)}"
+        return template_str, f"Error during formatting: {str(e)}", False
+
+
+def _check_single_query_field(template_json: dict) -> bool:
+    """
+    Check if template has exactly one query-type field and no system prompt field.
+    Other non-prompt fields (like top_k, temperature, etc.) are ignored.
+    """
+    if not isinstance(template_json, dict):
+        return False
+
+    query_fields = ["query", "prompt", "message", "text", "input", "content", "user_prompt"]
+    system_fields = ["system_prompt", "system", "system_message"]
+
+    has_query_field = False
+    has_system_field = False
+
+    for key, value in template_json.items():
+        if key in query_fields and isinstance(value, str) and value.lower() == "string":
+            if has_query_field:  # more than one query-like field
+                return False
+            has_query_field = True
+        elif key in system_fields:
+            has_system_field = True
+        elif key == "messages":
+            # If messages array exists, it's not a simple single-query case
+            return False
+
+    # Valid if one query field and no system field
+    return has_query_field and not has_system_field
+
+
+def _apply_query_only_format(template_json: dict) -> dict:
+    """
+    Apply query-only format: keep all other fields intact,
+    but replace query-like fields with {query}.
+    """
+    formatted_json = {}
+    query_fields = ["query", "prompt", "message", "text", "input", "content", "user_prompt"]
+
+    for key, value in template_json.items():
+        if key in query_fields and isinstance(value, str):
+            formatted_json[key] = "{query}"
+        else:
+            # Make sure to remove any accidental system_prompt placeholders
+            if isinstance(value, str):
+                formatted_json[key] = value.replace("{system_prompt}\\n\\n", "").replace("{system_prompt}", "")
+            else:
+                formatted_json[key] = value
+    return formatted_json
+
+
+def _apply_combined_format(template_json: dict) -> dict:
+    """
+    Apply combined format: {"query": "{system_prompt}\\n\\n{query}"}
+    """
+    formatted_json = {}
+    query_fields = ["query", "prompt", "message", "text", "input", "content", "user_prompt"]
+    
+    for key, value in template_json.items():
+        if key in query_fields and isinstance(value, str) and value.lower() == "string":
+            formatted_json[key] = "{system_prompt}\\n\\n{query}"
+        else:
+            formatted_json[key] = value
+    
+    return formatted_json
+
 
 def _describe_template_changes(original: str, formatted: str) -> str:
     """
@@ -393,7 +500,6 @@ def _describe_template_changes(original: str, formatted: str) -> str:
         
         changes = []
         
-        # Check for field additions
         orig_keys = set(orig_json.keys())
         new_keys = set(new_json.keys())
         added_keys = new_keys - orig_keys
@@ -401,7 +507,6 @@ def _describe_template_changes(original: str, formatted: str) -> str:
         if added_keys:
             changes.append(f"Added fields: {', '.join(added_keys)}")
         
-        # Check for value changes
         for key in orig_keys & new_keys:
             if str(orig_json[key]) != str(new_json[key]):
                 if "system_prompt" in str(new_json[key]) or "query" in str(new_json[key]):
@@ -409,7 +514,6 @@ def _describe_template_changes(original: str, formatted: str) -> str:
                 else:
                     changes.append(f"Updated '{key}' value")
         
-        # Check for messages array changes
         if "messages" in new_json and isinstance(new_json["messages"], list):
             changes.append("Formatted messages array for LLM conversation")
         
@@ -418,8 +522,9 @@ def _describe_template_changes(original: str, formatted: str) -> str:
     except Exception:
         return "Template converted to LLM-compatible format"
 
+
 def suggest_prompt_from_response(existing_prompt, target_response, query, rating=None, enhancement_request=None, temperature=50):
-    """Generate system prompt suggestions based on existing prompt, target response, rating, and enhancement request using Gemini."""
+    """Generate system prompt suggestions based on existing prompt, target_response, rating, and enhancement request using Gemini."""
     if not st.session_state.get('gemini_api_key'):
         return "Gemini API key required for prompt suggestion"
     
@@ -428,17 +533,14 @@ def suggest_prompt_from_response(existing_prompt, target_response, query, rating
         
         model = genai.GenerativeModel('gemini-2.5-flash')
         
-        # Build context based on available information
         context_parts = []
         
-        # Always include existing prompt and response
         context_parts.append(f"**Existing System Prompt:**\n{existing_prompt}")
         context_parts.append(f"**Generated Response:**\n{target_response}")
         context_parts.append(f"**Original Query Context:** {query}")
         
-        # Add rating context if provided
         if rating is not None:
-            rating_percentage = rating * 10  # Convert 0-10 scale to percentage
+            rating_percentage = rating * 10
             if rating_percentage >= 80:
                 context_parts.append(f"**User Rating:** {rating}/10 ({rating_percentage}%) - High satisfaction, minor refinements needed")
             elif rating_percentage >= 60:
@@ -448,7 +550,6 @@ def suggest_prompt_from_response(existing_prompt, target_response, query, rating
             else:
                 context_parts.append(f"**User Rating:** {rating}/10 ({rating_percentage}%) - Very low satisfaction, major changes required")
         
-        # Add enhancement request if provided
         if enhancement_request and enhancement_request.strip():
             context_parts.append(f"**Requested Enhancements:**\n{enhancement_request}")
         
