@@ -302,7 +302,7 @@ class DatabaseManager:
             cursor.execute("""
                 SELECT * FROM export_results
                 WHERE user_name = %s
-                ORDER BY timestamp DESC
+                ORDER BY created_at ASC, prompt_name ASC
             """, (user_name,))
             
             results = cursor.fetchall()
