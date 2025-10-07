@@ -55,7 +55,7 @@ def initialize_guest_session():
         'query', 'response', 'status', 'status_code', 'timestamp',
         'edited', 'step', 'combination_strategy', 'combination_temperature',
         'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
-    ]).astype({'rating': 'Int64'})
+    ]).astype({'rating': 'Int64', 'created_at': 'datetime64[ns]', 'updated_at': 'datetime64[ns]'})
     st.session_state.test_results = pd.DataFrame(columns=[
         'user_name', 'unique_id', 'prompt_name', 'system_prompt', 'query', 'response', 
         'status', 'status_code', 'timestamp', 'rating', 'remark', 'edited'
@@ -91,12 +91,12 @@ def save_export_entry(
             'status', 'status_code', 'timestamp', 'edited', 'step',
             'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark',
             'created_at', 'updated_at'
-        ]).astype({'rating': 'Int64'})
+        ]).astype({'rating': 'Int64', 'created_at': 'datetime64[ns]', 'updated_at': 'datetime64[ns]'})
     
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     unique_id = f"{mode}_{prompt_name}_{timestamp}_{uuid.uuid4()}"
     
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now()
     # Create new entry dictionary
     entry_data = {
         'user_name': user_name,
@@ -132,12 +132,20 @@ def save_export_entry(
         st.warning("Database connection failed, saved to session only.")
     
     # Add to session state
-    new_entry = pd.DataFrame([entry_data])
+    new_entry = pd.DataFrame([entry_data]).astype({
+        'rating': 'Int64',
+        'created_at': 'datetime64[ns]',
+        'updated_at': 'datetime64[ns]'
+    })
     
     if st.session_state.export_data.empty:
         st.session_state.export_data = new_entry
     else:
-        st.session_state.export_data = pd.concat([st.session_state.export_data, new_entry], ignore_index=True).astype({'rating': 'Int64'})
+        st.session_state.export_data = pd.concat([st.session_state.export_data, new_entry], ignore_index=True).astype({
+            'rating': 'Int64',
+            'created_at': 'datetime64[ns]',
+            'updated_at': 'datetime64[ns]'
+        })
 
     st.write(f"Added {mode} result: {unique_id}")
     return unique_id
@@ -170,7 +178,11 @@ def load_all_results_from_db():
         df = load_user_results(user_name)
         
         if df is not None and not df.empty:
-            # Successfully loaded data
+            # Convert created_at and updated_at to datetime
+            df['created_at'] = pd.to_datetime(df['created_at'])
+            df['updated_at'] = pd.to_datetime(df['updated_at'])
+            # Sort by created_at and prompt_name for consistent display
+            df = df.sort_values(by=['created_at', 'prompt_name'], ascending=[True, True])
             st.session_state.export_data = df.astype({'rating': 'Int64'})
             return True
         else:
@@ -181,9 +193,8 @@ def load_all_results_from_db():
                 'query', 'response', 'status', 'status_code', 'timestamp',
                 'edited', 'step', 'combination_strategy', 'combination_temperature',
                 'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
-            ]).astype({'rating': 'Int64'})
+            ]).astype({'rating': 'Int64', 'created_at': 'datetime64[ns]', 'updated_at': 'datetime64[ns]'})
             return True  # Return True even if empty - connection was successful
-            
     except Exception as e:
         st.error(f"Error loading results from database: {str(e)}")
         # Initialize empty DataFrame on error
@@ -192,7 +203,7 @@ def load_all_results_from_db():
             'query', 'response', 'status', 'status_code', 'timestamp',
             'edited', 'step', 'combination_strategy', 'combination_temperature',
             'slider_weights', 'rating', 'remark', 'created_at', 'updated_at'
-        ]).astype({'rating': 'Int64'})
+        ]).astype({'rating': 'Int64', 'created_at': 'datetime64[ns]', 'updated_at': 'datetime64[ns]'})
         return False
 
 def update_rating_in_db(unique_id, rating, remark):
@@ -238,7 +249,7 @@ def render_export_section(query_text):
             'status', 'status_code', 'timestamp', 'edited', 'step',
             'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark',
             'created_at', 'updated_at'
-        ]).astype({'rating': 'Int64'})
+        ]).astype({'rating': 'Int64', 'created_at': 'datetime64[ns]', 'updated_at': 'datetime64[ns]'})
     
     # Check for guest user and ensure clean session
     if check_if_guest_user():
@@ -277,7 +288,6 @@ def render_export_section(query_text):
             with col2:
                 st.metric("Rated Results", stats.get('rated_results', 0))
             with col3:
-                # st.metric("Avg Rating", f"{stats.get('avg_rating', 0):.2f}" if stats.get('avg_rating') else "N/A")
                 st.metric("Median Rating", f"{stats.get('median_rating', 0):.2f}" if stats.get('median_rating') else "N/A")
             with col4:
                 st.metric("Test Types", stats.get('unique_test_types', 0))
@@ -302,25 +312,27 @@ def render_export_section(query_text):
         elif rating_filter == 'Unrated':
             filtered_df = filtered_df[filtered_df['rating'].isna()]
 
+        # Convert created_at and updated_at to datetime to ensure Arrow compatibility
+        filtered_df['created_at'] = pd.to_datetime(filtered_df['created_at'])
+        filtered_df['updated_at'] = pd.to_datetime(filtered_df['updated_at'])
+
+        # Sort the filtered DataFrame for consistent display
+        filtered_df = filtered_df.sort_values(by=['created_at', 'prompt_name'], ascending=[True, True])
+
         # Drop id and edited from display
         drop_cols = [col for col in ['id', 'edited'] if col in filtered_df.columns]
         filtered_df = filtered_df.drop(columns=drop_cols, errors='ignore')
 
-        # Ensure created_at and updated_at are always visible
+        # Ensure created_at and updated_at are always visible and in datetime format
         if 'created_at' in filtered_df.columns:
-            filtered_df['created_at'] = filtered_df['created_at'].fillna(
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            )
+            filtered_df['created_at'] = filtered_df['created_at'].fillna(datetime.now())
         if 'updated_at' in filtered_df.columns:
-            filtered_df['updated_at'] = filtered_df['updated_at'].fillna(
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            )
+            filtered_df['updated_at'] = filtered_df['updated_at'].fillna(datetime.now())
         
         st.dataframe(filtered_df, width='stretch')
         
         # Predict Scores button
         st.subheader("🔮 Predict Scores")
-        # if (st.session_state.export_data['rating'].notna()).any():
         rated_count = len(st.session_state.export_data[(st.session_state.export_data['rating'].notna()) & (st.session_state.export_data['edited'])])
         st.info(f"Currently {rated_count} rated prompts available for prediction")
         
@@ -425,19 +437,22 @@ def display_guest_session_data():
         elif rating_filter == 'Unrated':
             filtered_df = filtered_df[filtered_df['rating'].isna()]
 
+        # Convert created_at and updated_at to datetime to ensure Arrow compatibility
+        filtered_df['created_at'] = pd.to_datetime(filtered_df['created_at'])
+        filtered_df['updated_at'] = pd.to_datetime(filtered_df['updated_at'])
+
+        # Sort the filtered DataFrame for consistent display
+        filtered_df = filtered_df.sort_values(by=['created_at', 'prompt_name'], ascending=[True, True])
+
         # Drop id and edited from display
         drop_cols = [col for col in ['id', 'edited'] if col in filtered_df.columns]
         filtered_df = filtered_df.drop(columns=drop_cols, errors='ignore')
 
-        # Ensure created_at and updated_at are always visible
+        # Ensure created_at and updated_at are always visible and in datetime format
         if 'created_at' in filtered_df.columns:
-            filtered_df['created_at'] = filtered_df['created_at'].fillna(
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            )
+            filtered_df['created_at'] = filtered_df['created_at'].fillna(datetime.now())
         if 'updated_at' in filtered_df.columns:
-            filtered_df['updated_at'] = filtered_df['updated_at'].fillna(
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            )
+            filtered_df['updated_at'] = filtered_df['updated_at'].fillna(datetime.now())
         
         st.dataframe(filtered_df, width='stretch')
         
@@ -489,14 +504,14 @@ def render_clear_results_section(guest_mode=False):
     #             if db:
     #                 success = db.delete_all_user_export_results(st.session_state.user_name)
     #                 db.disconnect()
-                    
+    #                 
     #                 if success:
     #                     st.session_state.export_data = pd.DataFrame(columns=[
     #                         'user_name', 'unique_id', 'test_type', 'prompt_name', 'system_prompt', 'query', 'response', 
     #                         'status', 'status_code', 'timestamp', 'edited', 'step',
     #                         'combination_strategy', 'combination_temperature', 'slider_weights', 'rating', 'remark',
     #                         'created_at', 'updated_at'
-    #                     ]).astype({'rating': 'Int64'})
+    #                     ]).astype({'rating': 'Int64', 'created_at': 'datetime64[ns]', 'updated_at': 'datetime64[ns]'})
     #                     st.success("All database results cleared!")
     #                     st.rerun()
     #                 else:
