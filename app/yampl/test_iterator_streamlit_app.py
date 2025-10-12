@@ -1,4 +1,4 @@
-# Fixed AST-based static analysis with robust payload detection and smart YAML parser
+# Enhanced Prompt Testing Agent with API Management and Smart YAML Parsing
 import streamlit as st
 import pandas as pd
 import yaml
@@ -7,6 +7,10 @@ import requests
 import importlib.util
 import sys
 import os
+import subprocess
+import threading
+import time
+import signal
 from pathlib import Path
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -68,6 +72,9 @@ class SmartYAMLParserTool:
         self.prompt_indicators = [
             'system_prompt', 'prompt', 'instruction', 'backstory', 'goal', 
             'system', 'personality', 'behavior', 'role', 'description'
+        ]
+        self.system_prompt_keys = [
+            'system_prompt', 'system_prompt_key', 'prompt_key', 'instruction_key'
         ]
     
     def parse_yaml_file(self, yaml_content: str) -> Dict[str, Any]:
@@ -345,6 +352,60 @@ class SmartYAMLParserTool:
             })
         
         return mapped_payloads
+    
+    def extract_system_prompts_for_code_modification(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Extract system prompts specifically for code modification.
+        Returns list of dictionaries with system prompt variations that can be used to replace
+        system prompts in code.
+        """
+        variations = []
+        
+        def extract_prompts_recursive(obj, path="", current_variation=None):
+            if current_variation is None:
+                current_variation = {}
+            
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    new_path = f"{path}.{key}" if path else key
+                    
+                    # Check if this key indicates a system prompt
+                    if any(indicator in key.lower() for indicator in self.prompt_indicators):
+                        if isinstance(value, list):
+                            # Multiple prompts - create variations
+                            for i, prompt in enumerate(value):
+                                if isinstance(prompt, str) and len(prompt.strip()) > 10:
+                                    variation = current_variation.copy()
+                                    variation[key] = prompt
+                                    variation['_prompt_source'] = f"{new_path}[{i}]"
+                                    variations.append(variation)
+                        elif isinstance(value, str) and len(value.strip()) > 10:
+                            # Single prompt
+                            variation = current_variation.copy()
+                            variation[key] = value
+                            variation['_prompt_source'] = new_path
+                            variations.append(variation)
+                    else:
+                        # Continue recursion
+                        extract_prompts_recursive(value, new_path, current_variation)
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj):
+                    if isinstance(item, str) and len(item.strip()) > 10:
+                        variation = current_variation.copy()
+                        variation['prompt'] = item
+                        variation['_prompt_source'] = f"{path}[{i}]"
+                        variations.append(variation)
+                    elif isinstance(item, (dict, list)):
+                        extract_prompts_recursive(item, f"{path}[{i}]", current_variation)
+        
+        extract_prompts_recursive(data)
+        
+        # If no variations found, try to extract any string values
+        if not variations:
+            variations = self._fallback_extraction(data)
+        
+        logger.info(f"✅ Extracted {len(variations)} system prompt variation(s) for code modification")
+        return variations
 
 # --- Utility functions ---
 def safe_json_loads(s: str):
@@ -687,7 +748,7 @@ class SmartInspectorTool:
             "body_keys": list(body_keys)
         }
 
-    def synthesize_spec_from_ast(self, ast_info: Dict[str, Any]) -> Tuple[List[PayloadSpec], float]:
+    def synthesize_spec_from_ast(self, ast_info: Dict[str, Any], code_content: str = None) -> Tuple[List[PayloadSpec], float]:
         """Build PayloadSpec list from AST with confidence score. Returns ALL matching routes."""
         routes = ast_info.get("routes", [])
         requests_calls = ast_info.get("requests_calls", [])
@@ -839,8 +900,13 @@ class SmartInspectorTool:
         # Priority 4: Check if code is a script (has main execution logic)
         # Look for crew.kickoff(), agent initialization, or similar patterns
         logger.info("\n✓ Checking for script-based execution")
-        has_crew = any("crew" in str(node).lower() for node in ast.walk(tree))
-        has_agent = any("agent" in str(node).lower() for node in ast.walk(tree))
+        try:
+            tree = ast.parse(code_content)
+            has_crew = any("crew" in str(node).lower() for node in ast.walk(tree))
+            has_agent = any("agent" in str(node).lower() for node in ast.walk(tree))
+        except Exception:
+            has_crew = False
+            has_agent = False
         
         if has_crew or has_agent:
             logger.info("  Detected agent/crew-based script")
@@ -922,7 +988,7 @@ class SmartInspectorTool:
 
         specs, conf = ([], 0.0)
         try:
-            specs, conf = self.synthesize_spec_from_ast(ast_info)
+            specs, conf = self.synthesize_spec_from_ast(ast_info, code_content)
             logger.info(f"AST analysis confidence: {conf}, found {len(specs)} specs")
         except Exception as e:
             logger.exception("synthesize_spec_from_ast error")
@@ -970,6 +1036,242 @@ class LLMClient:
         except Exception as e:
             logger.exception("LLM call failed")
             return f"LLM_ERROR: {e}"
+
+# --- Code Modification Tool ---
+class CodeModificationTool:
+    """
+    Tool for modifying uploaded code to replace system prompts with YAML prompts.
+    """
+    
+    def __init__(self):
+        self.system_prompt_patterns = [
+            r'load_system_prompts\(\)',
+            r'SYSTEM_PROMPTS\s*=\s*load_system_prompts\(\)',
+            r'system_prompt\s*=\s*SYSTEM_PROMPTS\.get\(',
+            r'system_prompt\s*=\s*[^=]+\.get\(',
+        ]
+    
+    def detect_system_prompt_usage(self, code_content: str) -> Dict[str, Any]:
+        """
+        Detect how system prompts are used in the code.
+        Returns information about where and how system prompts are referenced.
+        """
+        import re
+        
+        findings = {
+            'has_system_prompts': False,
+            'system_prompt_vars': [],
+            'system_prompt_usage': [],
+            'load_functions': [],
+            'modification_points': []
+        }
+        
+        lines = code_content.split('\n')
+        
+        for i, line in enumerate(lines):
+            line_lower = line.lower()
+            
+            # Check for system prompt variable definitions
+            if 'system_prompt' in line_lower and ('=' in line or 'def ' in line):
+                findings['system_prompt_vars'].append({
+                    'line': i + 1,
+                    'content': line.strip(),
+                    'type': 'definition'
+                })
+                findings['has_system_prompts'] = True
+            
+            # Check for system prompt usage
+            if 'system_prompt' in line_lower:
+                findings['system_prompt_usage'].append({
+                    'line': i + 1,
+                    'content': line.strip(),
+                    'type': 'usage'
+                })
+                findings['has_system_prompts'] = True
+            
+            # Check for load functions
+            if 'load_system_prompts' in line_lower or 'load_prompts' in line_lower:
+                findings['load_functions'].append({
+                    'line': i + 1,
+                    'content': line.strip(),
+                    'type': 'load_function'
+                })
+                findings['has_system_prompts'] = True
+            
+            # Check for YAML loading
+            if 'yaml.safe_load' in line_lower or 'yaml.load' in line_lower:
+                findings['load_functions'].append({
+                    'line': i + 1,
+                    'content': line.strip(),
+                    'type': 'yaml_load'
+                })
+        
+        return findings
+    
+    def create_modified_code(self, original_code: str, system_prompt_variations: List[Dict[str, Any]], 
+                           variation_index: int = 0) -> str:
+        """
+        Create modified code with a specific system prompt variation.
+        """
+        if not system_prompt_variations or variation_index >= len(system_prompt_variations):
+            return original_code
+        
+        variation = system_prompt_variations[variation_index]
+        modified_code = original_code
+        
+        # Find the best prompt to use from the variation
+        system_prompt_text = None
+        for key, value in variation.items():
+            if key.startswith('_'):
+                continue
+            if isinstance(value, str) and len(value.strip()) > 10:
+                system_prompt_text = value
+                break
+        
+        if not system_prompt_text:
+            return original_code
+        
+        # Replace system prompt loading with direct assignment
+        import re
+        
+        # Pattern 1: Replace load_system_prompts() calls
+        pattern1 = r'load_system_prompts\(\)'
+        if re.search(pattern1, modified_code):
+            modified_code = re.sub(pattern1, f'"{system_prompt_text}"', modified_code)
+        
+        # Pattern 2: Replace SYSTEM_PROMPTS.get() calls
+        pattern2 = r'system_prompt\s*=\s*SYSTEM_PROMPTS\.get\([^)]+\)'
+        if re.search(pattern2, modified_code):
+            modified_code = re.sub(pattern2, f'system_prompt = "{system_prompt_text}"', modified_code)
+        
+        # Pattern 3: Replace any system_prompt assignment
+        pattern3 = r'system_prompt\s*=\s*[^=]+\.get\([^)]+\)'
+        if re.search(pattern3, modified_code):
+            modified_code = re.sub(pattern3, f'system_prompt = "{system_prompt_text}"', modified_code)
+        
+        return modified_code
+
+# --- Background Execution Tool ---
+class BackgroundExecutionTool:
+    """
+    Tool for running APIs in background or creating APIs around functions.
+    """
+    
+    def __init__(self):
+        self.running_processes = {}
+        self.temp_files = []
+    
+    def create_api_wrapper(self, code_content: str, function_name: str = None) -> str:
+        """
+        Create a FastAPI wrapper around a function-based code.
+        """
+        api_wrapper = f'''
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import json
+import sys
+import os
+import tempfile
+import importlib.util
+from typing import Any, Dict
+
+# Original code
+{code_content}
+
+# FastAPI wrapper
+app = FastAPI(title="Generated API Wrapper", version="1.0.0")
+
+class RequestModel(BaseModel):
+    query: str
+    system_prompt: str = ""
+    temperature: float = 0.7
+    max_tokens: int = 150
+
+class ResponseModel(BaseModel):
+    response: str
+    status: str
+
+@app.get("/")
+async def root():
+    return {{"message": "Generated API wrapper is running"}}
+
+@app.get("/health")
+async def health():
+    return {{"status": "ok"}}
+
+@app.post("/chat", response_model=ResponseModel)
+async def chat(request: RequestModel):
+    try:
+        # Call the main function with the request data
+        if "{function_name}" and hasattr(sys.modules[__name__], "{function_name}"):
+            func = getattr(sys.modules[__name__], "{function_name}")
+            result = func(request.query, system_prompt=request.system_prompt)
+        else:
+            # Try to find any function that might be the main one
+            for name in dir():
+                if callable(globals()[name]) and not name.startswith('_'):
+                    func = globals()[name]
+                    try:
+                        result = func(request.query, system_prompt=request.system_prompt)
+                        break
+                    except:
+                        continue
+            else:
+                result = f"Mock response for: {{request.query}} with system prompt: {{request.system_prompt}}"
+        
+        return ResponseModel(response=str(result), status="success")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+'''
+        return api_wrapper
+    
+    def start_background_api(self, api_code: str, port: int = 8000) -> subprocess.Popen:
+        """
+        Start an API in the background.
+        """
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(api_code)
+            temp_file = f.name
+            self.temp_files.append(temp_file)
+        
+        process = subprocess.Popen(
+            [sys.executable, temp_file],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        self.running_processes[port] = process
+        
+        # Wait a moment for the server to start
+        time.sleep(3)
+        
+        return process
+    
+    def stop_background_api(self, port: int = 8000):
+        """
+        Stop a background API.
+        """
+        if port in self.running_processes:
+            process = self.running_processes[port]
+            process.terminate()
+            process.wait()
+            del self.running_processes[port]
+    
+    def cleanup_temp_files(self):
+        """
+        Clean up temporary files.
+        """
+        for temp_file in self.temp_files:
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
+        self.temp_files.clear()
 
 # --- Payload Builder & Executor ---
 class PayloadBuilderTool:
@@ -1123,6 +1425,8 @@ class PromptTestingAgent:
         self.builder = PayloadBuilderTool()
         self.executor = ExecutorTool()
         self.yaml_parser = SmartYAMLParserTool()
+        self.code_modifier = CodeModificationTool()
+        self.background_executor = BackgroundExecutionTool()
 
     def analyze_code(self, code_content: str) -> AnalysisResult:
         return self.inspector.inspect(code_content)
@@ -1140,6 +1444,180 @@ class PromptTestingAgent:
     def execute(self, spec: PayloadSpec, payload: Dict[str, Any], 
                 code_content: Optional[str] = None) -> Dict[str, Any]:
         return self.executor.execute(spec, payload, code_content=code_content)
+    
+    def extract_system_prompts_for_code_modification(self, yaml_content: str) -> List[Dict[str, Any]]:
+        """Extract system prompts specifically for code modification"""
+        data = self.yaml_parser.parse_yaml_file(yaml_content)
+        return self.yaml_parser.extract_system_prompts_for_code_modification(data)
+    
+    def detect_system_prompt_usage(self, code_content: str) -> Dict[str, Any]:
+        """Detect how system prompts are used in the code"""
+        return self.code_modifier.detect_system_prompt_usage(code_content)
+    
+    def create_modified_code(self, original_code: str, system_prompt_variations: List[Dict[str, Any]], 
+                           variation_index: int = 0) -> str:
+        """Create modified code with a specific system prompt variation"""
+        return self.code_modifier.create_modified_code(original_code, system_prompt_variations, variation_index)
+    
+    def create_api_wrapper(self, code_content: str, function_name: str = None) -> str:
+        """Create a FastAPI wrapper around function-based code"""
+        return self.background_executor.create_api_wrapper(code_content, function_name)
+    
+    def start_background_api(self, api_code: str, port: int = 8000) -> subprocess.Popen:
+        """Start an API in the background"""
+        return self.background_executor.start_background_api(api_code, port)
+    
+    def stop_background_api(self, port: int = 8000):
+        """Stop a background API"""
+        return self.background_executor.stop_background_api(port)
+    
+    def run_comprehensive_test(self, code_content: str, yaml_content: str, queries: List[str], yaml_variations: List[Dict[str, Any]] = None) -> pd.DataFrame:
+        """
+        Run comprehensive test: modify code with YAML prompts and test with queries.
+        Returns DataFrame with system prompt used, query, and response.
+        """
+        results = []
+        
+        # Extract system prompt variations from YAML
+        if yaml_content == "mock_yaml_from_variations" and yaml_variations:
+            # Use provided yaml_variations
+            system_prompt_variations = yaml_variations
+        else:
+            system_prompt_variations = self.extract_system_prompts_for_code_modification(yaml_content)
+        
+        if not system_prompt_variations:
+            logger.warning("No system prompt variations found in YAML")
+            return pd.DataFrame()
+        
+        # Detect system prompt usage in code
+        usage_info = self.detect_system_prompt_usage(code_content)
+        
+        if not usage_info['has_system_prompts']:
+            logger.warning("No system prompt usage detected in code")
+            return pd.DataFrame()
+        
+        # Analyze code to determine execution strategy
+        analysis = self.analyze_code(code_content)
+        specs = analysis.spec
+        
+        # Determine if we need to create an API wrapper
+        needs_api_wrapper = True
+        api_specs = [s for s in specs if s.is_api]
+        
+        if api_specs:
+            # Code already has API endpoints
+            needs_api_wrapper = False
+            selected_spec = api_specs[0]  # Use first API spec
+        else:
+            # Need to create API wrapper
+            func_specs = [s for s in specs if not s.is_api]
+            if func_specs:
+                selected_spec = func_specs[0]
+            else:
+                # Create a generic spec for the wrapper
+                selected_spec = PayloadSpec(
+                    is_api=True,
+                    api_endpoint="http://localhost:8000/chat",
+                    http_method="POST",
+                    function_name=None,
+                    execution_type="api",
+                    required_params=["query", "system_prompt"],
+                    system_prompt_param="system_prompt",
+                    query_param="query",
+                    additional_params={}
+                )
+        
+        # Test each system prompt variation
+        for i, variation in enumerate(system_prompt_variations):
+            logger.info(f"Testing variation {i+1}/{len(system_prompt_variations)}")
+            
+            # Create modified code with this variation
+            modified_code = self.create_modified_code(code_content, system_prompt_variations, i)
+            
+            # Start API if needed
+            api_process = None
+            if needs_api_wrapper:
+                api_wrapper_code = self.create_api_wrapper(modified_code, selected_spec.function_name)
+                try:
+                    api_process = self.start_background_api(api_wrapper_code, port=8000)
+                    time.sleep(5)  # Wait for API to start
+                except Exception as e:
+                    logger.error(f"Failed to start API: {e}")
+                    continue
+            
+            # Test with each query
+            for j, query in enumerate(queries):
+                try:
+                    # Build payload
+                    system_prompt_text = None
+                    for key, value in variation.items():
+                        if not key.startswith('_') and isinstance(value, str) and len(value.strip()) > 10:
+                            system_prompt_text = value
+                            break
+                    
+                    if not system_prompt_text:
+                        system_prompt_text = "Default system prompt"
+                    
+                    payload = {
+                        "query": query,
+                        "system_prompt": system_prompt_text
+                    }
+                    
+                    # Execute test
+                    if needs_api_wrapper and api_process:
+                        # Test via API
+                        exec_result = self.executor.execute(selected_spec, payload)
+                    else:
+                        # Test via direct execution
+                        exec_result = self.executor.execute(selected_spec, payload, code_content=modified_code)
+                    
+                    # Extract response
+                    if exec_result.get("success"):
+                        response_text = str(exec_result.get("result", ""))
+                    else:
+                        response_text = f"ERROR: {exec_result.get('error', 'Unknown error')}"
+                    
+                    # Store result
+                    result_entry = {
+                        'System_Prompt_Used': system_prompt_text[:200] + "..." if len(system_prompt_text) > 200 else system_prompt_text,
+                        'Query': query,
+                        'Response': response_text[:500] + "..." if len(response_text) > 500 else response_text,
+                        'Full_Response': response_text,
+                        'Variation_Index': i + 1,
+                        'Query_Index': j + 1,
+                        'Success': exec_result.get("success", False),
+                        'Error': exec_result.get("error", "") if not exec_result.get("success", False) else "",
+                        'YAML_Source': variation.get('_prompt_source', 'Unknown')
+                    }
+                    
+                    results.append(result_entry)
+                    
+                except Exception as e:
+                    logger.error(f"Error testing query {j+1} with variation {i+1}: {e}")
+                    result_entry = {
+                        'System_Prompt_Used': system_prompt_text[:200] + "..." if len(system_prompt_text) > 200 else system_prompt_text,
+                        'Query': query,
+                        'Response': f"ERROR: {str(e)}",
+                        'Full_Response': f"ERROR: {str(e)}",
+                        'Variation_Index': i + 1,
+                        'Query_Index': j + 1,
+                        'Success': False,
+                        'Error': str(e),
+                        'YAML_Source': variation.get('_prompt_source', 'Unknown')
+                    }
+                    results.append(result_entry)
+            
+            # Stop API if we started one
+            if api_process:
+                try:
+                    self.stop_background_api(port=8000)
+                except:
+                    pass
+        
+        # Cleanup
+        self.background_executor.cleanup_temp_files()
+        
+        return pd.DataFrame(results)
 
 # --- File Loading ---
 def load_from_file(uploaded_file) -> list:
@@ -1206,8 +1684,8 @@ def main():
         st.session_state.code_analyzed = False
     if 'yaml_variations' not in st.session_state:
         st.session_state.yaml_variations = []
-    if 'use_smart_yaml' not in st.session_state:
-        st.session_state.use_smart_yaml = False
+    if 'yaml_content' not in st.session_state:
+        st.session_state.yaml_content = None
 
     # Sidebar
     with st.sidebar:
@@ -1288,19 +1766,10 @@ def main():
 
     st.divider()
 
-    # System Prompts with Smart YAML Parser
+    # System Prompts with Smart YAML Parser (Default)
     st.subheader("💬 System Prompts")
     
-    # Toggle for smart YAML parsing
-    use_smart_yaml = st.checkbox(
-        "🧠 Use Smart YAML Parser (Auto-detect goals, backstories, etc.)",
-        value=st.session_state.use_smart_yaml,
-        help="Enable this to automatically parse and iterate through YAML structures with multiple goals/backstories"
-    )
-    st.session_state.use_smart_yaml = use_smart_yaml
-    
-    if use_smart_yaml:
-        st.info("📚 **Smart YAML Mode**: Upload a YAML file with nested prompts. The agent will automatically detect and iterate through all variations.")
+    st.info("📚 **Smart YAML Mode**: Upload a YAML file with nested prompts. The agent will automatically detect and iterate through all variations.")
     
     tab1, tab2 = st.tabs(["📤 Upload File", "✏️ Manual Input"])
     
@@ -1312,9 +1781,10 @@ def main():
             current_file_id = f"{prompts_file.name}_{prompts_file.size}"
             if st.session_state.get('last_prompts_file_id') != current_file_id:
                 with st.spinner("Loading prompts..."):
-                    if use_smart_yaml and prompts_file.name.endswith(('.yaml', '.yml')):
-                        # Use smart YAML parser
+                    if prompts_file.name.endswith(('.yaml', '.yml')):
+                        # Use smart YAML parser (default)
                         yaml_content = prompts_file.read().decode('utf-8')
+                        st.session_state.yaml_content = yaml_content  # Store for comprehensive testing
                         agent = PromptTestingAgent()
                         variations = agent.parse_prompts_yaml(yaml_content)
                         st.session_state.yaml_variations = variations
@@ -1331,11 +1801,12 @@ def main():
                         
                         st.rerun()
                     else:
-                        # Use traditional loading
+                        # Use traditional loading for non-YAML files
                         loaded_prompts = load_from_file(prompts_file)
                         if loaded_prompts:
                             st.session_state.system_prompts = loaded_prompts
                             st.session_state.yaml_variations = []
+                            st.session_state.yaml_content = None  # Clear YAML content
                             st.session_state.last_prompts_file_id = current_file_id
                             st.success(f"✅ Loaded {len(loaded_prompts)} prompts")
                             st.rerun()
@@ -1347,16 +1818,18 @@ def main():
                                      key="manual_prompts")
         col5, col6 = st.columns([1,1])
         with col5:
-            if st.button("➕ Add Manual Prompts", type="primary"):
+            if st.button("➕ Add Manual Prompts", type="primary", key="add_manual_prompts"):
                 if manual_prompts.strip():
                     new_prompts = [line.strip() for line in manual_prompts.split('\n') if line.strip()]
                     st.session_state.system_prompts.extend(new_prompts)
                     st.session_state.yaml_variations = []  # Clear YAML variations
+                    st.session_state.yaml_content = None  # Clear YAML content
                     st.success(f"✅ Added {len(new_prompts)} prompts")
         with col6:
-            if st.button("🗑️ Clear All Prompts"):
+            if st.button("🗑️ Clear All Prompts", key="clear_all_prompts"):
                 st.session_state.system_prompts = []
                 st.session_state.yaml_variations = []
+                st.session_state.yaml_content = None
                 st.session_state.pop('last_prompts_file_id', None)
                 st.success("✅ Cleared")
                 st.rerun()
@@ -1365,9 +1838,58 @@ def main():
     if st.session_state.yaml_variations:
         st.success(f"**📚 Smart YAML Mode: {len(st.session_state.yaml_variations)} variations loaded**")
         st.caption("The agent will test each variation against all queries")
+        
+        # Make YAML variations editable
+        with st.expander("✏️ Edit YAML Variations", expanded=False):
+            st.markdown("**Edit the extracted YAML variations:**")
+            
+            # Create a copy for editing
+            if 'editable_yaml_variations' not in st.session_state:
+                st.session_state.editable_yaml_variations = st.session_state.yaml_variations.copy()
+            
+            variations_to_delete = []
+            for i, variation in enumerate(st.session_state.editable_yaml_variations):
+                st.markdown(f"### Variation {i+1}")
+                
+                # Display and edit each key-value pair in the variation
+                for key, value in variation.items():
+                    if not key.startswith('_'):  # Skip metadata keys
+                        if isinstance(value, str):
+                            edited_value = st.text_area(
+                                f"{key}", 
+                                value, 
+                                height=60, 
+                                key=f"edit_yaml_{i}_{key}"
+                            )
+                            if edited_value != value:
+                                st.session_state.editable_yaml_variations[i][key] = edited_value
+                        else:
+                            st.text(f"{key}: {value}")
+                
+                # Delete button for this variation
+                col_edit_a, col_edit_b = st.columns([5, 1])
+                with col_edit_b:
+                    if st.button("🗑️", key=f"del_yaml_variation_{i}"):
+                        variations_to_delete.append(i)
+                
+                st.divider()
+            
+            # Handle deletions
+            for idx in sorted(variations_to_delete, reverse=True):
+                st.session_state.editable_yaml_variations.pop(idx)
+            
+            if variations_to_delete:
+                st.rerun()
+            
+            # Update the main variations with edited ones
+            if st.button("💾 Save Changes", key="save_yaml_changes"):
+                st.session_state.yaml_variations = st.session_state.editable_yaml_variations.copy()
+                st.success("✅ Changes saved!")
+                st.rerun()
+                
     elif st.session_state.system_prompts:
         st.success(f"**Loaded: {len(st.session_state.system_prompts)} prompts**")
-        with st.expander("Edit Prompts", expanded=False):
+        with st.expander("✏️ Edit Prompts", expanded=False):
             prompts_to_delete = []
             for i, prompt in enumerate(st.session_state.system_prompts):
                 col_a, col_b = st.columns([5,1])
@@ -1413,13 +1935,13 @@ def main():
                                      key="manual_queries")
         col9, col10 = st.columns([1,1])
         with col9:
-            if st.button("➕ Add Manual Queries", type="primary"):
+            if st.button("➕ Add Manual Queries", type="primary", key="add_manual_queries"):
                 if manual_queries.strip():
                     new_queries = [line.strip() for line in manual_queries.split('\n') if line.strip()]
                     st.session_state.queries.extend(new_queries)
                     st.success(f"✅ Added {len(new_queries)} queries")
         with col10:
-            if st.button("🗑️ Clear All Queries"):
+            if st.button("🗑️ Clear All Queries", key="clear_all_queries"):
                 st.session_state.queries = []
                 st.session_state.pop('last_queries_file_id', None)
                 st.success("✅ Cleared")
@@ -1444,6 +1966,37 @@ def main():
                 st.rerun()
     else:
         st.warning("⚠️ No queries loaded")
+
+    st.divider()
+
+    # Status Indicators
+    st.subheader("📊 Status Check")
+    
+    # Check component status
+    has_code = st.session_state.get('code_content') is not None
+    has_yaml = st.session_state.get('yaml_content') is not None or bool(st.session_state.yaml_variations)
+    has_queries = bool(st.session_state.queries)
+    
+    col_status1, col_status2, col_status3 = st.columns(3)
+    with col_status1:
+        st.metric("Code", "✅" if has_code else "❌", "Uploaded" if has_code else "Missing")
+    with col_status2:
+        st.metric("YAML", "✅" if has_yaml else "❌", "Uploaded" if has_yaml else "Missing")
+    with col_status3:
+        st.metric("Queries", "✅" if has_queries else "❌", f"{len(st.session_state.queries)} loaded" if has_queries else "Missing")
+    
+    # Show overall status
+    if has_code and has_yaml and has_queries:
+        st.success("🎯 **Ready for Testing!** All components loaded.")
+    else:
+        missing_components = []
+        if not has_code:
+            missing_components.append("Code")
+        if not has_yaml:
+            missing_components.append("YAML")
+        if not has_queries:
+            missing_components.append("Queries")
+        st.warning(f"⚠️ Missing: {', '.join(missing_components)}")
 
     st.divider()
 
@@ -1529,7 +2082,7 @@ def main():
         # Run Button
         col11, col12, col13 = st.columns([1, 2, 1])
         with col12:
-            if st.button("▶️ Run Tests", type="primary", use_container_width=True):
+            if st.button("▶️ Run Tests", type="primary", use_container_width=True, key="run_tests"):
                 agent = PromptTestingAgent()
                 results = []
                 progress_bar = st.progress(0)
@@ -1680,7 +2233,7 @@ def main():
                 st.download_button("📥 Download Excel", excel_buffer, "prompt_test_results.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             with col3:
-                if st.button("🧹 Clear Results", use_container_width=True):
+                if st.button("🧹 Clear Results", use_container_width=True, key="clear_test_results"):
                     st.session_state.test_results = None
                     st.success("✅ Results cleared")
                     st.rerun()
