@@ -1,0 +1,3 @@
+default:
+  - "You are a helpful assistant providing accurate and concise answers."
+  - "Answer in a funny way"
